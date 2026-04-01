@@ -1,6 +1,10 @@
+import useScrollReveal from '../hooks/useScrollReveal'
+
 const Footer = () => {
+  const footerRef = useScrollReveal({ threshold: 0.1 })
+
   return (
-    <footer className="border-t border-[#F40000]/8 py-10 px-4 md:px-6">
+    <footer ref={footerRef} className="border-t border-[#F40000]/8 py-10 px-4 md:px-6">
       <div className="max-w-5xl mx-auto">
         <div className="grid grid-cols-1 md:grid-cols-3 gap-8 text-xs">
           <div>
