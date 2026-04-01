@@ -1,3 +1,4 @@
+import "dotenv/config";
 import { BedrockRuntimeClient } from "@aws-sdk/client-bedrock-runtime";
 
 export const awsRegion =

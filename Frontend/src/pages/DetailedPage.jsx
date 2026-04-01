@@ -184,7 +184,7 @@ const DetailedPage = () => {
                       ▼
     ┌─────────────────────────────────────┐
     │          BACKEND API                │
-    │     (FastAPI / Node.js)             │
+    │     (Node.js / Express)             │
     └─────────────────┬───────────────────┘
                       │
          ┌────────────┼────────────┐
@@ -204,7 +204,7 @@ const DetailedPage = () => {
                       ▼
     ┌─────────────────────────────────────┐
     │       AI ANALYSIS ENGINE            │
-    │         (OpenAI API)                │
+    │         (AWS Bedrock / Claude)                │
     └─────────────────┬───────────────────┘
                       ▼
     ┌─────────────────────────────────────┐
@@ -279,12 +279,12 @@ const DetailedPage = () => {
                 </div>
                 <div className="border border-[#F40000]/10 rounded p-3">
                   <p className="text-[#F40000] font-bold text-[10px] tracking-wider mb-2">BACKEND</p>
-                  <p className="text-white">  FastAPI / Node.js</p>
+                  <p className="text-white">  Node.js (Express)</p>
                   <p className="text-[#6b6271]">  REST API + scan orchestration</p>
                 </div>
                 <div className="border border-[#F40000]/10 rounded p-3">
                   <p className="text-[#F40000] font-bold text-[10px] tracking-wider mb-2">AI LAYER</p>
-                  <p className="text-white">  OpenAI API</p>
+                  <p className="text-white">  AWS Bedrock (Claude)</p>
                   <p className="text-[#6b6271]">  Explanation + fix generation</p>
                 </div>
                 <div className="border border-[#F40000]/10 rounded p-3">

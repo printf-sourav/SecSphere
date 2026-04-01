@@ -1,5 +1,7 @@
 const clamp = (value, min, max) => Math.max(min, Math.min(max, value));
 
+const SECRET_SIGNAL_REGEX = /hardcoded\s+secret|access\s+key|private\s+key|api[_\s-]?key|token|password/i;
+
 const getImpactMultiplier = (projectContext) => {
   const impact = String(projectContext?.impact || "medium").toLowerCase();
   if (impact === "high") {
@@ -51,13 +53,39 @@ export const predictRiskScore = (issues, projectContext = {}) => {
     counts.low * 3 +
     counts.total * 1.25;
 
-  const adjustedRisk = weightedRisk * getImpactMultiplier(projectContext);
-  const predictedScore = clamp(Math.round(100 - adjustedRisk), 0, 100);
+  const hasHighOrCritical = counts.critical > 0 || counts.high > 0;
+  const hasSecretSignal = (issues || []).some((issue) =>
+    SECRET_SIGNAL_REGEX.test(String(issue?.title || ""))
+  );
+
+  let adjustedRisk = weightedRisk * getImpactMultiplier(projectContext);
+
+  // Keep risk interpretation conservative when severe findings exist.
+  if (hasHighOrCritical) {
+    adjustedRisk += 6;
+  }
+
+  // Secrets are high-impact by nature; enforce stronger penalty.
+  if (hasSecretSignal) {
+    adjustedRisk += 22;
+  }
+
+  let predictedScore = clamp(Math.round(100 - adjustedRisk), 0, 100);
+
+  // A project with high/critical findings should not be labeled low risk.
+  if (hasHighOrCritical && predictedScore > 79) {
+    predictedScore = 79;
+  }
+
+  // Secret-related findings should remain at least high risk.
+  if (hasSecretSignal && predictedScore > 55) {
+    predictedScore = 55;
+  }
 
   return {
     predictedScore,
     riskBand: getRiskBand(predictedScore),
-    model: "linear-risk-v1",
+    model: "linear-risk-v2",
     features: counts,
   };
 };

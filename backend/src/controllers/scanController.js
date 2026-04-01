@@ -23,6 +23,7 @@ import {
   getLearnedFixExamples,
   recordUserFixFeedback,
 } from "../services/learningService.js";
+import { applyFixToCodebase } from "../services/fixApplyService.js";
 import { calculateScore, sortIssuesBySeverity } from "../utils/riskScore.js";
 import { predictRiskScore } from "../utils/riskPredictor.js";
 import { inferProjectContext } from "../utils/projectContext.js";
@@ -331,6 +332,7 @@ export const handleScan = async (req, res) => {
             vulnerability: item.vulnerability,
             source: item.source,
             usageCount: Number(item.usageCount || 0),
+            fix: item.fix,
           }));
         }
 
@@ -411,4 +413,32 @@ export const handleFixFeedback = async (req, res) => {
       "Fix feedback recorded"
     )
   );
+};
+
+export const handleApplyFixToCodebase = async (req, res) => {
+  const vulnerability = req.body?.vulnerability || req.body?.title;
+  const fix = req.body?.fix;
+  const file = req.body?.file || req.body?.relativeFilePath;
+
+  if (!vulnerability || !fix || !file) {
+    throw new ApiError(400, "vulnerability, fix and file are required");
+  }
+
+  try {
+    const applied = await applyFixToCodebase({
+      relativeFilePath: file,
+      vulnerability,
+      selectedFix: fix,
+    });
+
+    return res.json(
+      new ApiResponse(
+        200,
+        applied,
+        "Fix applied to codebase"
+      )
+    );
+  } catch (error) {
+    throw new ApiError(400, error.message || "Unable to apply fix to codebase");
+  }
 };

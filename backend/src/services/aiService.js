@@ -5,6 +5,81 @@ import {
   bedrockTimeoutMs,
 } from "../config/awsConfig.js";
 
+const EXPLANATION_FALLBACK_RULES = [
+  {
+    pattern: /wildcard\s+cors\s+origin|cors[_\s-]?origin\s*[:=]\s*["']\*["']/i,
+    explanation:
+      "A wildcard CORS origin allows any website to call your API, which can expose authenticated endpoints to untrusted origins.",
+    fix: "Restrict CORS to trusted origins only (for example specific domains) and avoid using '*' for production APIs.",
+  },
+  {
+    pattern: /iam\s+wildcard\s+action|"action"\s*:\s*"\*"/i,
+    explanation:
+      "Wildcard IAM actions can grant broader permissions than intended, increasing blast radius if credentials are compromised.",
+    fix: "Replace wildcard actions with least-privilege actions required by the workload and scope permissions by service.",
+  },
+  {
+    pattern: /iam\s+wildcard\s+resource|"resource"\s*:\s*"\*"/i,
+    explanation:
+      "Wildcard IAM resources permit access across many assets, which can lead to privilege escalation and data exposure.",
+    fix: "Scope IAM resources to specific ARNs and add conditions where possible to limit access context.",
+  },
+  {
+    pattern: /administratoraccess/i,
+    explanation:
+      "Administrator-level policies provide full account access and should be tightly controlled to reduce takeover risk.",
+    fix: "Remove broad admin policies from routine principals and use role-based least-privilege access with temporary elevation.",
+  },
+  {
+    pattern: /open\s+network\s+access|0\.0\.0\.0\/0/i,
+    explanation:
+      "Public network exposure to all IPs increases the chance of unauthorized access and automated attacks.",
+    fix: "Restrict inbound CIDRs to trusted ranges, expose only required ports, and prefer private networking paths.",
+  },
+  {
+    pattern: /ssl\s+disabled/i,
+    explanation:
+      "Disabling SSL/TLS can expose data in transit to interception and tampering.",
+    fix: "Enable TLS for all external and internal service communication and enforce secure protocol versions.",
+  },
+  {
+    pattern: /unsafe\s+eval\s+usage|\beval\s*\(/i,
+    explanation:
+      "Using eval can execute untrusted input as code, which may lead to remote code execution.",
+    fix: "Remove eval usage and replace it with safer parsing or explicit control-flow logic over validated input.",
+  },
+  {
+    pattern: /dynamic\s+function\s+constructor\s+usage|new\s+function\s*\(/i,
+    explanation:
+      "Dynamic function construction can introduce code injection risks when input is not strictly controlled.",
+    fix: "Avoid new Function for runtime code generation and use predefined functions with validated parameters instead.",
+  },
+  {
+    pattern: /potential\s+command\s+execution|child_process\.(exec|execsync|spawn)\s*\(/i,
+    explanation:
+      "Shell command execution can be abused for command injection if any part of the command derives from user input.",
+    fix: "Use allowlisted commands, pass arguments safely without shell interpolation, and sanitize all external input.",
+  },
+  {
+    pattern: /hardcoded\s+secret|possible\s+hardcoded\s+secret|access\s+key|private\s+key/i,
+    explanation:
+      "Embedded secrets in source or config can be leaked through repositories, logs, or build artifacts.",
+    fix: "Move secrets to a secret manager or environment variables, rotate compromised values, and block secret commits in CI.",
+  },
+  {
+    pattern: /path\.?join/i,
+    explanation:
+      "User-influenced path construction can lead to path traversal and unauthorized file system access.",
+    fix: "Normalize and validate path segments against an allowlist, reject traversal patterns, and enforce a fixed base directory.",
+  },
+  {
+    pattern: /sensitive\s+file\s+explicitly\s+included/i,
+    explanation:
+      "Re-including sensitive files in version control can expose credentials and cryptographic material.",
+    fix: "Remove sensitive files from tracked history, update ignore rules, and rotate any exposed secrets immediately.",
+  },
+];
+
 const toContextLine = (projectContext = {}) => {
   const domain = projectContext?.domain || "generic";
   const confidence = Number(projectContext?.confidence || 0);
@@ -109,6 +184,36 @@ const invokeBedrock = async (prompt, maxTokens = 250) => {
   return "";
 };
 
+const getRuleBasedFallback = (title, learnedExamples = []) => {
+  const safeTitle = String(title || "Unknown issue");
+
+  const matchedRule = EXPLANATION_FALLBACK_RULES.find((rule) =>
+    rule.pattern.test(safeTitle)
+  );
+
+  if (matchedRule) {
+    return {
+      explanation: matchedRule.explanation,
+      fix: matchedRule.fix,
+    };
+  }
+
+  if (learnedExamples[0]?.fix) {
+    return {
+      explanation:
+        "A previously validated remediation pattern was applied for a similar issue to keep guidance consistent and practical.",
+      fix: String(learnedExamples[0].fix),
+    };
+  }
+
+  return {
+    explanation:
+      "This issue can increase security risk if left unresolved. Apply a least-privilege, input-validation, and secure-configuration approach based on the affected component.",
+    fix:
+      "Review the affected file, remove broad permissions or unsafe constructs, validate untrusted input, and apply environment-specific hardening before deployment.",
+  };
+};
+
 export const explainIssue = async (title, options = {}) => {
   const safeTitle = String(title || "Unknown issue");
   const projectContext = options?.projectContext || {};
@@ -140,25 +245,9 @@ export const explainIssue = async (title, options = {}) => {
       };
     }
 
-    if (learnedExamples[0]?.fix) {
-      return {
-        explanation:
-          "Similar vulnerabilities were resolved previously. Reusing a validated remediation pattern for consistency.",
-        fix: String(learnedExamples[0].fix),
-      };
-    }
-
-    return null;
+    return getRuleBasedFallback(safeTitle, learnedExamples);
   } catch {
-    if (learnedExamples[0]?.fix) {
-      return {
-        explanation:
-          "Bedrock response was unavailable, so the system applied a learned remediation pattern from prior accepted fixes.",
-        fix: String(learnedExamples[0].fix),
-      };
-    }
-
-    return null;
+    return getRuleBasedFallback(safeTitle, learnedExamples);
   }
 };
 

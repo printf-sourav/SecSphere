@@ -1,4 +1,5 @@
 import { useState, useEffect } from 'react'
+import { useNavigate } from 'react-router-dom'
 
 const BOOT_LINES = [
   { text: '[BOOT] Initializing SecSphere Engine v3.2.1...', delay: 0, color: '#6b6271' },
@@ -33,6 +34,7 @@ const BOOT_LINES = [
 
 const HeroSection = () => {
   const [visibleLines, setVisibleLines] = useState([])
+  const navigate = useNavigate()
 
   useEffect(() => {
     const timers = BOOT_LINES.map((line, i) => {
@@ -78,10 +80,10 @@ const HeroSection = () => {
 
         {/* CTA below terminal */}
         <div className="mt-8 flex flex-col sm:flex-row items-center justify-center gap-4 animate-fade-in" style={{ animationDelay: '5.5s', opacity: 0, animationFillMode: 'forwards' }}>
-          <button className="btn-red" id="cta-start-scan">
+          <button className="btn-red" id="cta-start-scan" onClick={() => navigate('/dashboard')}>
             {'>'} START_SECURE_SCAN
           </button>
-          <button className="btn-ghost" id="cta-view-demo">
+          <button className="btn-ghost" id="cta-view-demo" onClick={() => navigate('/details')}>
             {'>'} VIEW_DEMO
           </button>
         </div>
@@ -95,3 +97,4 @@ const HeroSection = () => {
 }
 
 export default HeroSection
+

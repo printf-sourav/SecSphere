@@ -1,6 +1,10 @@
 import express from "express";
 import { upload } from "../utils/multer.js";
-import { handleFixFeedback, handleScan } from "../controllers/scanController.js";
+import {
+	handleApplyFixToCodebase,
+	handleFixFeedback,
+	handleScan,
+} from "../controllers/scanController.js";
 import { asyncHandler } from "../utils/asyncHandler.js";
 
 const router = express.Router();
@@ -99,5 +103,7 @@ router.post("/scan", upload.single("file"), asyncHandler(handleScan));
  */
 
 router.post("/feedback/fix", asyncHandler(handleFixFeedback));
+
+router.post("/fix/apply", asyncHandler(handleApplyFixToCodebase));
 
 export default router;

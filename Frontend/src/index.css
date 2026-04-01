@@ -190,3 +190,21 @@
   .text-green { color: #00ff41; }
   .text-muted { color: #6b6271; }
 }
+
+/* Scan progress animation */
+@keyframes scan {
+  0% { width: 0%; }
+  50% { width: 80%; }
+  100% { width: 60%; }
+}
+
+/* Fade-in animation for CTA */
+@keyframes fade-in {
+  from { opacity: 0; transform: translateY(10px); }
+  to { opacity: 1; transform: translateY(0); }
+}
+
+.animate-fade-in {
+  animation: fade-in 0.6s ease forwards;
+}
+

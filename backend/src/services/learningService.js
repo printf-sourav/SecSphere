@@ -11,6 +11,38 @@ const patternDatasetFile = path.join(dataDir, "security-patterns.json");
 
 const MAX_STORED_LEARNINGS = Number(process.env.MAX_STORED_LEARNINGS || 1000);
 
+const NOISE_TOKENS = new Set([
+  "a",
+  "an",
+  "and",
+  "be",
+  "by",
+  "can",
+  "detected",
+  "for",
+  "from",
+  "going",
+  "in",
+  "into",
+  "issue",
+  "issues",
+  "may",
+  "of",
+  "or",
+  "possible",
+  "potential",
+  "security",
+  "the",
+  "to",
+  "unsafe",
+  "usage",
+  "use",
+  "user",
+  "using",
+  "vulnerability",
+  "with",
+]);
+
 const normalizeText = (value) => String(value || "").trim();
 
 const tokenize = (value) =>
@@ -18,7 +50,8 @@ const tokenize = (value) =>
     .toLowerCase()
     .replace(/[^a-z0-9\s]/g, " ")
     .split(/\s+/)
-    .filter((token) => token.length > 2);
+    .filter((token) => token.length > 2)
+    .filter((token) => !NOISE_TOKENS.has(token));
 
 const toKeywordSet = (value) => new Set(tokenize(value));
 
@@ -44,9 +77,28 @@ const ensureLearningFiles = async () => {
 };
 
 const scoreExample = (example, title, projectType) => {
-  const titleKeywords = toKeywordSet(title);
-  const vulnKeywords = toKeywordSet(example.vulnerability);
-  const keywordOverlap = [...titleKeywords].filter((key) => vulnKeywords.has(key)).length;
+  const normalizedTitle = normalizeText(title).toLowerCase();
+  const normalizedVuln = normalizeText(example.vulnerability).toLowerCase();
+  const titleKeywords = toKeywordSet(normalizedTitle);
+  const vulnKeywords = toKeywordSet(normalizedVuln);
+  const overlapTokens = [...titleKeywords].filter((key) => vulnKeywords.has(key));
+  const keywordOverlap = overlapTokens.length;
+
+  const exactLike =
+    normalizedTitle.includes(normalizedVuln) || normalizedVuln.includes(normalizedTitle);
+
+  // Require stronger semantic overlap to prevent unrelated learned fixes.
+  const minOverlap = exactLike ? 1 : 2;
+  if (keywordOverlap < minOverlap) {
+    return 0;
+  }
+
+  const overlapRatio =
+    Math.min(titleKeywords.size, vulnKeywords.size) > 0
+      ? keywordOverlap / Math.min(titleKeywords.size, vulnKeywords.size)
+      : 0;
+
+  const overlapScore = keywordOverlap * 1.2 + overlapRatio;
   const usageScore = Math.min(Number(example.usageCount || 0), 10) * 0.1;
   const projectBonus =
     projectType &&
@@ -54,7 +106,7 @@ const scoreExample = (example, title, projectType) => {
       ? 1
       : 0;
 
-  return keywordOverlap + usageScore + projectBonus;
+  return overlapScore + usageScore + projectBonus;
 };
 
 export const recordUserFixFeedback = async ({
