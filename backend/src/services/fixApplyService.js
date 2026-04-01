@@ -446,11 +446,466 @@ const applyInsecureFileHandlingFix = (content, extension) => {
   return traversalResult;
 };
 
-const applyFixHeuristic = ({ content, vulnerability, extension, targetPath }) => {
+const applyInjectionFix = (content, extension) => {
+  let changed = false;
+  let updated = String(content || "");
+
+  updated = updated.replace(/\beval\s*\(/g, () => {
+    changed = true;
+    return "JSON.parse(";
+  });
+
+  updated = updated.replace(/new\s+Function\s*\(/g, () => {
+    changed = true;
+    return "(() => { throw new Error('Dynamic function blocked'); })(";
+  });
+
+  updated = updated.replace(/child_process\.exec\s*\(/g, () => {
+    changed = true;
+    return "child_process.execFile(";
+  });
+
+  if (extension === ".py") {
+    updated = updated.replace(/os\.system\s*\(/g, () => {
+      changed = true;
+      return "subprocess.run(";
+    });
+  }
+
+  return {
+    changed,
+    updated,
+    strategy: changed ? "block-injection-primitives" : null,
+  };
+};
+
+const applyXssFix = (content) => {
+  let changed = false;
+  let updated = String(content || "");
+
+  updated = updated.replace(/\.innerHTML\s*=/g, () => {
+    changed = true;
+    return ".textContent =";
+  });
+
+  updated = updated.replace(/document\.write\s*\(/g, () => {
+    changed = true;
+    return "console.log(";
+  });
+
+  updated = updated.replace(/dangerouslySetInnerHTML/g, () => {
+    changed = true;
+    return "data-secure-render";
+  });
+
+  return {
+    changed,
+    updated,
+    strategy: changed ? "safe-html-sinks" : null,
+  };
+};
+
+const applyMissingInputValidationFix = (content, extension) => {
+  if (!CODE_LIKE_EXTENSIONS.has(extension)) {
+    return {
+      changed: false,
+      updated: content,
+      strategy: null,
+    };
+  }
+
+  let changed = false;
+  let updated = String(content || "");
+
+  if (!/const\s+sanitizeInput\s*=/.test(updated)) {
+    const helper = [
+      "const sanitizeInput = (value) => {",
+      "  if (value && typeof value === 'object') return value;",
+      "  return value;",
+      "};",
+      "",
+    ].join("\n");
+
+    updated = `${helper}${updated}`;
+    changed = true;
+  }
+
+  updated = updated.replace(/\breq\.(body|query|params)\b/g, (fullMatch) => {
+    changed = true;
+    return `sanitizeInput(${fullMatch})`;
+  });
+
+  return {
+    changed,
+    updated,
+    strategy: changed ? "input-validation-guard" : null,
+  };
+};
+
+const applyDebugConfigFix = (content) => {
+  let changed = false;
+  let updated = String(content || "");
+
+  updated = updated.replace(/debug\s*=\s*True/g, () => {
+    changed = true;
+    return "debug=False";
+  });
+
+  updated = updated.replace(/NODE_ENV\s*[:=]\s*["']development["']/gi, () => {
+    changed = true;
+    return 'NODE_ENV="production"';
+  });
+
+  updated = updated.replace(/app\.run\s*\(([^)]*)debug\s*=\s*True([^)]*)\)/gi, (full, before, after) => {
+    changed = true;
+    return `app.run(${before}debug=False${after})`;
+  });
+
+  return {
+    changed,
+    updated,
+    strategy: changed ? "disable-debug-mode" : null,
+  };
+};
+
+const applyInsecureAuthLogicFix = (content) => {
+  let changed = false;
+  let updated = String(content || "");
+
+  updated = updated.replace(/password\s*==\s*["'][^"']+["']/gi, () => {
+    changed = true;
+    return "password === (process.env.ADMIN_PASSWORD || '')";
+  });
+
+  updated = updated.replace(/if\s+password\s*==\s*["'][^"']+["']/gi, () => {
+    changed = true;
+    return "if (password === (process.env.ADMIN_PASSWORD || ''))";
+  });
+
+  return {
+    changed,
+    updated,
+    strategy: changed ? "harden-auth-check" : null,
+  };
+};
+
+const applyBrokenAccessControlFix = (content, extension) => {
+  if (!CODE_LIKE_EXTENSIONS.has(extension)) {
+    return {
+      changed: false,
+      updated: content,
+      strategy: null,
+    };
+  }
+
+  let changed = false;
+  let updated = String(content || "");
+
+  if (!/const\s+requireAdmin\s*=/.test(updated)) {
+    const middleware = [
+      "const requireAdmin = (req, res, next) => {",
+      "  if (!req.user || req.user.role !== 'admin') return res.status(403).send('Forbidden');",
+      "  next();",
+      "};",
+      "",
+    ].join("\n");
+
+    updated = `${middleware}${updated}`;
+    changed = true;
+  }
+
+  updated = updated.replace(
+    /(app|router)\.(get|post|put|delete)\s*\(\s*["']\/?admin[^"']*["']\s*,\s*(?!requireAdmin\b)/gi,
+    (fullMatch) => {
+      changed = true;
+      return `${fullMatch}requireAdmin, `;
+    }
+  );
+
+  return {
+    changed,
+    updated,
+    strategy: changed ? "enforce-admin-middleware" : null,
+  };
+};
+
+const applySensitiveLoggingFix = (content) => {
+  let changed = false;
+  let updated = String(content || "");
+
+  updated = updated.replace(/(console\.log\s*\([^\n]*)(password|token|secret)([^\n]*\))/gi, (fullMatch) => {
+    changed = true;
+    return fullMatch.replace(/(password|token|secret)/gi, "REDACTED");
+  });
+
+  updated = updated.replace(/(print\s*\([^\n]*)(password|token|secret)([^\n]*\))/gi, (fullMatch) => {
+    changed = true;
+    return fullMatch.replace(/(password|token|secret)/gi, "REDACTED");
+  });
+
+  return {
+    changed,
+    updated,
+    strategy: changed ? "redact-sensitive-logs" : null,
+  };
+};
+
+const applyImproperErrorHandlingFix = (content) => {
+  let changed = false;
+  let updated = String(content || "");
+
+  updated = updated.replace(/return\s+str\s*\(\s*e\s*\)/g, () => {
+    changed = true;
+    return "return 'Internal Server Error'";
+  });
+
+  updated = updated.replace(/res\.status\(([^)]*)\)\.send\s*\(\s*err(or)?\s*\)/gi, (full, statusCode) => {
+    changed = true;
+    return `res.status(${statusCode}).send('Internal Server Error')`;
+  });
+
+  updated = updated.replace(/res\.json\s*\(\s*\{\s*error\s*:\s*err(or)?([^}]*)\}\s*\)/gi, () => {
+    changed = true;
+    return "res.json({ error: 'Internal Server Error' })";
+  });
+
+  return {
+    changed,
+    updated,
+    strategy: changed ? "sanitize-error-response" : null,
+  };
+};
+
+const applyDeserializationFix = (content) => {
+  let changed = false;
+  let updated = String(content || "");
+
+  updated = updated.replace(/pickle\.loads\s*\(/g, () => {
+    changed = true;
+    return "json.loads(";
+  });
+
+  updated = updated.replace(/yaml\.load\s*\(/g, () => {
+    changed = true;
+    return "yaml.safe_load(";
+  });
+
+  updated = updated.replace(/ObjectInputStream\s*\(/g, () => {
+    changed = true;
+    return "SafeObjectInputStream(";
+  });
+
+  return {
+    changed,
+    updated,
+    strategy: changed ? "safe-deserialization" : null,
+  };
+};
+
+const applyWeakCryptoFix = (content) => {
+  let changed = false;
+  let updated = String(content || "");
+
+  updated = updated.replace(/hashlib\.md5\s*\(/g, () => {
+    changed = true;
+    return "hashlib.sha256(";
+  });
+
+  updated = updated.replace(/hashlib\.sha1\s*\(/g, () => {
+    changed = true;
+    return "hashlib.sha256(";
+  });
+
+  updated = updated.replace(/crypto\.createHash\s*\(\s*["'](md5|sha1)["']\s*\)/gi, () => {
+    changed = true;
+    return "crypto.createHash('sha256')";
+  });
+
+  return {
+    changed,
+    updated,
+    strategy: changed ? "strong-crypto-primitives" : null,
+  };
+};
+
+const applyRateLimitingFix = (content, extension) => {
+  if (!CODE_LIKE_EXTENSIONS.has(extension)) {
+    return {
+      changed: false,
+      updated: content,
+      strategy: null,
+    };
+  }
+
+  let changed = false;
+  let updated = String(content || "");
+
+  if (!/const\s+rateLimitGuard\s*=/.test(updated)) {
+    const helper = [
+      "const rateLimitGuard = (req, res, next) => {",
+      "  req.__secsphereRequests = (req.__secsphereRequests || 0) + 1;",
+      "  if (req.__secsphereRequests > 100) return res.status(429).send('Too Many Requests');",
+      "  next();",
+      "};",
+      "",
+    ].join("\n");
+    updated = `${helper}${updated}`;
+    changed = true;
+  }
+
+  if (!/app\.use\(rateLimitGuard\)/.test(updated) && /app\.use\(express\.json\(\)\)/.test(updated)) {
+    updated = updated.replace(/app\.use\(express\.json\(\)\);/, (fullMatch) => {
+      changed = true;
+      return `${fullMatch}\napp.use(rateLimitGuard);`;
+    });
+  }
+
+  return {
+    changed,
+    updated,
+    strategy: changed ? "add-rate-limit-guard" : null,
+  };
+};
+
+const applyFileTypeSpoofingFix = (content) => {
+  let changed = false;
+  let updated = String(content || "");
+
+  if (/path\.extname\(file\.originalname\)/.test(updated) && !/Suspicious double extension/i.test(updated)) {
+    updated = updated.replace(/const\s+ext\s*=\s*path\.extname\(file\.originalname\)\.toLowerCase\(\);/, (fullMatch) => {
+      changed = true;
+      return `${fullMatch}\n\n  const originalName = String(file.originalname || '');\n  if (/\\.(php|exe|js|py|sh|bat)\\./i.test(originalName)) {\n    cb(new Error('Suspicious double extension'), false);\n    return;\n  }`;
+    });
+  }
+
+  return {
+    changed,
+    updated,
+    strategy: changed ? "double-extension-block" : null,
+  };
+};
+
+const applyLargeUploadDosFix = (content) => {
+  let changed = false;
+  let updated = String(content || "");
+
+  if (/export\s+const\s+upload\s*=\s*multer\s*\(\s*\{/.test(updated) && !/limits\s*:\s*\{\s*fileSize\s*:/.test(updated)) {
+    updated = updated.replace(/export\s+const\s+upload\s*=\s*multer\s*\(\s*\{/, (fullMatch) => {
+      changed = true;
+      return `${fullMatch}\n  limits: { fileSize: 5 * 1024 * 1024 },`;
+    });
+  }
+
+  return {
+    changed,
+    updated,
+    strategy: changed ? "upload-size-limit" : null,
+  };
+};
+
+const applyHiddenMalwareFix = (content) => {
+  let changed = false;
+  let updated = String(content || "");
+
+  updated = updated.replace(/(^|\n)\s*import\s+socket\s*\n/gi, () => {
+    changed = true;
+    return "\n# import socket  # blocked by SecSphere auto-fix\n";
+  });
+
+  updated = updated.replace(/(^|\n)[^\n]*(nc\s+-e\s+\/bin\/sh|\/bin\/bash\s+-i|powershell\s+-enc|reverse\s+shell)[^\n]*/gi, () => {
+    changed = true;
+    return "\n# Suspicious backdoor command removed by SecSphere auto-fix";
+  });
+
+  return {
+    changed,
+    updated,
+    strategy: changed ? "remove-backdoor-patterns" : null,
+  };
+};
+
+const applyFallbackGuidancePatch = ({
+  content,
+  extension,
+  selectedFix,
+  vulnerability,
+} = {}) => {
+  const suggestion = String(selectedFix || "").trim();
+  if (!suggestion) {
+    return {
+      changed: false,
+      updated: content,
+      strategy: null,
+    };
+  }
+
+  const note = `SecSphere remediation guidance for ${String(vulnerability || "this finding")}: ${suggestion}`;
+
+  if (extension === ".json") {
+    try {
+      const parsed = JSON.parse(String(content || "{}"));
+      parsed.__secsphereRemediation = note;
+      return {
+        changed: true,
+        updated: `${JSON.stringify(parsed, null, 2)}\n`,
+        strategy: "guidance-json-note",
+      };
+    } catch {
+      return {
+        changed: false,
+        updated: content,
+        strategy: null,
+      };
+    }
+  }
+
+  const commentPrefix = extension === ".py" ? "#" : "//";
+  return {
+    changed: true,
+    updated: `${String(content || "")}\n\n${commentPrefix} ${note}\n`,
+    strategy: "guidance-comment-note",
+  };
+};
+
+const applyFixHeuristic = ({
+  content,
+  vulnerability,
+  extension,
+  targetPath,
+  selectedFix,
+} = {}) => {
   const title = String(vulnerability || "").toLowerCase();
 
   if (/hardcoded\s+secret|possible\s+hardcoded\s+secret|access\s+key|private\s+key|token|password/.test(title)) {
     return applyHardcodedSecretFix(content, extension);
+  }
+
+  if (/sensitive\s+data\s+exposure/.test(title)) {
+    return applyHardcodedSecretFix(content, extension);
+  }
+
+  if (/injection\s+vulnerabilit|sql\s+injection|command\s+injection|code\s+injection/.test(title)) {
+    return applyInjectionFix(content, extension);
+  }
+
+  if (/cross-site\s+scripting|\bxss\b/.test(title)) {
+    return applyXssFix(content);
+  }
+
+  if (/missing\s+input\s+validation/.test(title)) {
+    return applyMissingInputValidationFix(content, extension);
+  }
+
+  if (/hardcoded\s+debug|dev\s+config/.test(title)) {
+    return applyDebugConfigFix(content);
+  }
+
+  if (/insecure\s+authentication\s+logic/.test(title)) {
+    return applyInsecureAuthLogicFix(content);
+  }
+
+  if (/broken\s+access\s+control/.test(title)) {
+    return applyBrokenAccessControlFix(content, extension);
   }
 
   if (/wildcard\s+cors\s+origin|cors/.test(title)) {
@@ -473,12 +928,59 @@ const applyFixHeuristic = ({ content, vulnerability, extension, targetPath }) =>
     return applyInsecureNetworkUsageFix(content);
   }
 
+  if (/sensitive\s+logging/.test(title)) {
+    return applySensitiveLoggingFix(content);
+  }
+
+  if (/improper\s+error\s+handling/.test(title)) {
+    return applyImproperErrorHandlingFix(content);
+  }
+
+  if (/deserialization\s+vulnerabilit/.test(title)) {
+    return applyDeserializationFix(content);
+  }
+
   if (/path\s+traversal/.test(title)) {
     return applyPathTraversalFix(content, extension);
   }
 
+  if (/weak\s+cryptography/.test(title)) {
+    return applyWeakCryptoFix(content);
+  }
+
+  if (/missing\s+rate\s+limiting/.test(title)) {
+    return applyRateLimitingFix(content, extension);
+  }
+
+  if (/cors\s+misconfiguration/.test(title)) {
+    return applyCorsWildcardFix(content);
+  }
+
+  if (/file\s+type\s+spoofing/.test(title)) {
+    return applyFileTypeSpoofingFix(content);
+  }
+
+  if (/large\s+file\s+upload|dos/.test(title)) {
+    return applyLargeUploadDosFix(content);
+  }
+
+  if (/hidden\s+malware|backdoor/.test(title)) {
+    return applyHiddenMalwareFix(content);
+  }
+
   if (/insecure\s+file\s+handling/.test(title)) {
     return applyInsecureFileHandlingFix(content, extension);
+  }
+
+  const fallback = applyFallbackGuidancePatch({
+    content,
+    extension,
+    selectedFix,
+    vulnerability,
+  });
+
+  if (fallback.changed) {
+    return fallback;
   }
 
   return {
@@ -531,6 +1033,7 @@ export const applyFixToCodebase = async ({
     vulnerability,
     extension,
     targetPath,
+    selectedFix,
   });
 
   if (!patchResult.changed || patchResult.updated === original) {

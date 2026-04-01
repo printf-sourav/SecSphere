@@ -544,6 +544,83 @@ export const handleDownloadFixedZipFromSession = async (req, res) => {
   });
 };
 
+export const handleApplyAllFixesToSession = async (req, res) => {
+  const scanSessionId = String(req.body?.scanSessionId || req.query?.scanSessionId || "").trim();
+
+  if (!scanSessionId) {
+    throw new ApiError(400, "scanSessionId is required");
+  }
+
+  const sessionRecord = await getZipProcessingRecord(scanSessionId);
+  if (!sessionRecord?.extractedPath || !(await fs.pathExists(sessionRecord.extractedPath))) {
+    throw new ApiError(400, "Scan session is missing or expired. Re-upload and scan again.");
+  }
+
+  const allIssues = await collectIssuesForFolder(sessionRecord.extractedPath);
+  const dedupedIssues = [];
+  const seen = new Set();
+
+  for (const issue of allIssues) {
+    const issueKey = `${String(issue.file || "").toLowerCase()}::${String(issue.title || "").toLowerCase()}`;
+    if (seen.has(issueKey)) {
+      continue;
+    }
+
+    seen.add(issueKey);
+    dedupedIssues.push(issue);
+  }
+
+  const appliedFixes = [];
+  const skippedFixes = [];
+
+  for (const issue of dedupedIssues) {
+    if (!issue.file || !issue.title) {
+      skippedFixes.push({
+        file: issue.file || "unknown",
+        vulnerability: issue.title || "unknown",
+        reason: "Missing issue file/title metadata",
+      });
+      continue;
+    }
+
+    try {
+      const applied = await applyFixToCodebase({
+        relativeFilePath: issue.file,
+        vulnerability: issue.title,
+        selectedFix: issue.fix || `Auto-fix batch mode for ${issue.title}`,
+        projectRoot: sessionRecord.extractedPath,
+      });
+
+      appliedFixes.push({
+        file: applied.file,
+        vulnerability: issue.title,
+        strategy: applied.strategy,
+      });
+    } catch (error) {
+      skippedFixes.push({
+        file: issue.file,
+        vulnerability: issue.title,
+        reason: error.message || "No safe automatic patch available",
+      });
+    }
+  }
+
+  return res.json(
+    new ApiResponse(
+      200,
+      {
+        scanSessionId,
+        totalDetected: dedupedIssues.length,
+        totalApplied: appliedFixes.length,
+        totalSkipped: skippedFixes.length,
+        appliedFixes,
+        skippedFixes,
+      },
+      "Bulk auto-fix completed"
+    )
+  );
+};
+
 export const handleFixZipAndReturn = async (req, res) => {
   const tempPaths = [];
 

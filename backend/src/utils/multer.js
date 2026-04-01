@@ -24,7 +24,13 @@ const storage = multer.diskStorage({
 const fileFilter = (req, file, cb) => {
   const allowedTypes = [".js", ".json", ".zip", ".txt"];
 
-  const ext = path.extname(file.originalname).toLowerCase();
+  const originalName = String(file.originalname || "");
+  const ext = path.extname(originalName).toLowerCase();
+
+  if (/\.(php|exe|js|py|sh|bat)\./i.test(originalName)) {
+    cb(new Error("Suspicious double extension"), false);
+    return;
+  }
 
   if (allowedTypes.includes(ext)) {
     cb(null, true);
@@ -36,4 +42,7 @@ const fileFilter = (req, file, cb) => {
 export const upload = multer({
   storage,
   fileFilter,
+  limits: {
+    fileSize: 5 * 1024 * 1024,
+  },
 });
