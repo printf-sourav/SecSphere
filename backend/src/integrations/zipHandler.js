@@ -3,6 +3,7 @@ import { fileURLToPath } from "url";
 import fs from "fs-extra";
 import AdmZip from "adm-zip";
 import PDFDocument from "pdfkit";
+import { randomUUID } from "crypto";
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -10,6 +11,45 @@ const backendRoot = path.resolve(__dirname, "..", "..");
 const extractedBaseDir = path.join(backendRoot, "src", "temp", "extracted");
 const jobsBaseDir = path.join(backendRoot, "src", "temp", "jobs");
 const outputBaseDir = path.join(backendRoot, "src", "temp", "output");
+const uploadsBaseDir = path.join(backendRoot, "src", "uploads");
+
+const MAX_ZIP_ENTRIES = Number(process.env.MAX_ZIP_ENTRIES || 5000);
+const MAX_ZIP_ENTRY_BYTES = Number(process.env.MAX_ZIP_ENTRY_BYTES || 10 * 1024 * 1024);
+const MAX_ZIP_TOTAL_UNCOMPRESSED_BYTES = Number(
+  process.env.MAX_ZIP_TOTAL_UNCOMPRESSED_BYTES || 200 * 1024 * 1024
+);
+
+const isInsideRoot = (rootDir, targetPath) => {
+  const relative = path.relative(rootDir, targetPath);
+  return relative === "" || (!relative.startsWith("..") && !path.isAbsolute(relative));
+};
+
+const resolvePathInsideBase = (baseDir, targetPath, label) => {
+  const resolvedBase = path.resolve(baseDir);
+  const resolvedTarget = path.resolve(targetPath);
+
+  if (!isInsideRoot(resolvedBase, resolvedTarget)) {
+    throw new Error(`${label} is outside allowed directory`);
+  }
+
+  return resolvedTarget;
+};
+
+const normalizeZipEntryName = (entryName) => {
+  const normalized = path.posix
+    .normalize(String(entryName || "").replace(/\\/g, "/"))
+    .replace(/^\/+/, "");
+
+  if (!normalized || normalized === ".") {
+    return null;
+  }
+
+  if (normalized.startsWith("../") || normalized.includes("/../")) {
+    return null;
+  }
+
+  return normalized;
+};
 
 export const extractZip = async (zipFilePath) => {
   if (!zipFilePath) {
@@ -18,12 +58,60 @@ export const extractZip = async (zipFilePath) => {
 
   await fs.ensureDir(extractedBaseDir);
 
-  const extractFolderName = `zip-${Date.now()}`;
+  const extractFolderName = `zip-${Date.now()}-${randomUUID().slice(0, 8)}`;
   const outputDir = path.join(extractedBaseDir, extractFolderName);
   await fs.ensureDir(outputDir);
 
-  const zip = new AdmZip(zipFilePath);
-  zip.extractAllTo(outputDir, true);
+  try {
+    const zip = new AdmZip(zipFilePath);
+    const entries = zip.getEntries();
+
+    if (entries.length > MAX_ZIP_ENTRIES) {
+      throw new Error("ZIP contains too many entries");
+    }
+
+    let totalUncompressedBytes = 0;
+
+    for (const entry of entries) {
+      const normalizedEntryName = normalizeZipEntryName(entry.entryName);
+      if (!normalizedEntryName) {
+        throw new Error("ZIP contains unsafe file paths");
+      }
+
+      const destinationPath = resolvePathInsideBase(
+        outputDir,
+        path.resolve(outputDir, normalizedEntryName),
+        "ZIP entry"
+      );
+
+      if (entry.isDirectory || normalizedEntryName.endsWith("/")) {
+        await fs.ensureDir(destinationPath);
+        continue;
+      }
+
+      const declaredSize = Number(entry.header?.size || 0);
+      if (Number.isFinite(declaredSize) && declaredSize > MAX_ZIP_ENTRY_BYTES) {
+        throw new Error("ZIP entry exceeds maximum allowed size");
+      }
+
+      const data = entry.getData();
+      const actualSize = Number(data.length || 0);
+      if (actualSize > MAX_ZIP_ENTRY_BYTES) {
+        throw new Error("ZIP entry exceeds maximum allowed size");
+      }
+
+      totalUncompressedBytes += actualSize;
+      if (totalUncompressedBytes > MAX_ZIP_TOTAL_UNCOMPRESSED_BYTES) {
+        throw new Error("ZIP exceeds maximum allowed uncompressed size");
+      }
+
+      await fs.ensureDir(path.dirname(destinationPath));
+      await fs.writeFile(destinationPath, data);
+    }
+  } catch (error) {
+    await fs.remove(outputDir).catch(() => undefined);
+    throw error;
+  }
 
   return outputDir;
 };
@@ -65,6 +153,7 @@ export const getZipProcessingRecordPath = (recordId) => {
     throw new Error("Invalid ZIP processing record id");
   }
 
+
   return path.join(jobsBaseDir, `${safeId}.json`);
 };
 
@@ -76,8 +165,22 @@ export const getZipProcessingRecord = async (recordId) => {
   }
 
   const record = await fs.readJson(recordPath);
+
+  const uploadedZipPath = record?.uploadedZipPath
+    ? path.resolve(record.uploadedZipPath)
+    : null;
+  const extractedPath = record?.extractedPath ? path.resolve(record.extractedPath) : null;
+
   return {
     ...record,
+    uploadedZipPath:
+      uploadedZipPath && isInsideRoot(path.resolve(uploadsBaseDir), uploadedZipPath)
+        ? uploadedZipPath
+        : null,
+    extractedPath:
+      extractedPath && isInsideRoot(path.resolve(extractedBaseDir), extractedPath)
+        ? extractedPath
+        : null,
     recordPath,
   };
 };
@@ -87,6 +190,11 @@ export const compressDirectory = async (sourceDir, filePrefix = "fixed-project")
     throw new Error("sourceDir is required");
   }
 
+  const safeSourceDir = resolvePathInsideBase(extractedBaseDir, sourceDir, "sourceDir");
+  if (!(await fs.pathExists(safeSourceDir))) {
+    throw new Error("sourceDir does not exist");
+  }
+
   await fs.ensureDir(outputBaseDir);
 
   const safePrefix = String(filePrefix || "fixed-project").replace(/[^a-zA-Z0-9_-]+/g, "_");
@@ -94,7 +202,7 @@ export const compressDirectory = async (sourceDir, filePrefix = "fixed-project")
   const outputZipPath = path.join(outputBaseDir, fileName);
 
   const zip = new AdmZip();
-  zip.addLocalFolder(sourceDir);
+  zip.addLocalFolder(safeSourceDir);
   zip.writeZip(outputZipPath);
 
   return outputZipPath;
@@ -135,9 +243,7 @@ export const createZipScanReportPdf = async (reportData, filePrefix = "zip-scan-
       doc.fontSize(13).text("Input Details", { underline: true });
       doc.fontSize(10);
       doc.text(`Uploaded File: ${reportData.input.uploadedFileName || "N/A"}`);
-      doc.text(`Uploaded ZIP Path: ${reportData.input.uploadedZipPath || "N/A"}`);
-      doc.text(`Extracted Path: ${reportData.input.extractedPath || "N/A"}`);
-      doc.text(`Tracking Record: ${reportData.input.trackingRecordPath || "N/A"}`);
+      doc.text(`Scan Session ID: ${reportData.input.scanSessionId || "N/A"}`);
       doc.moveDown(0.8);
     }
 

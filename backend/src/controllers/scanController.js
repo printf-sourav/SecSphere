@@ -76,12 +76,26 @@ const toIssueWithContext = (issue, filePath, basePath) => ({
   file: basePath ? path.relative(basePath, filePath) : path.basename(filePath),
 });
 
+const toSafeDisplayFileName = (value) => {
+  const normalized = String(value || "").replace(/\\/g, "/");
+  return path.posix.basename(normalized) || "uploaded-file";
+};
+
 const isValidGithubRepoUrl = (repoUrl) => {
   try {
     const url = new URL(repoUrl);
     const host = url.hostname.toLowerCase();
+    const isGitHubHost = host === "github.com" || host === "www.github.com";
+
+    if (!isGitHubHost || url.protocol !== "https:") {
+      return false;
+    }
+
     const parts = url.pathname.split("/").filter(Boolean);
-    return (host === "github.com" || host === "www.github.com") && parts.length >= 2;
+    const owner = parts[0] || "";
+    const repo = (parts[1] || "").replace(/\.git$/i, "");
+
+    return Boolean(owner && repo);
   } catch {
     return false;
   }
@@ -246,7 +260,7 @@ export const handleScan = async (req, res) => {
       }
 
       singleFileContent = await readTextSafely(req.file.path);
-      singleFileName = req.file.originalname || path.basename(req.file.path);
+      singleFileName = toSafeDisplayFileName(req.file.originalname || req.file.path);
 
       if (singleFileContent === null) {
         throw new ApiError(400, "File read error");
@@ -684,9 +698,7 @@ export const handleFixZipAndReturn = async (req, res) => {
     outputZipPath = await compressDirectory(extractedPath, "fixed-project");
     tempPaths.push(outputZipPath);
 
-    res.setHeader("X-Zip-Upload-Path", req.file.path);
-    res.setHeader("X-Zip-Extracted-Path", extractedPath);
-    res.setHeader("X-Zip-Record-Path", record.recordPath);
+    res.setHeader("X-Scan-Session-Id", record.id);
     res.setHeader("X-Issues-Detected", String(allIssues.length));
     res.setHeader("X-Fixes-Applied", String(appliedFixes.length));
 
@@ -754,10 +766,8 @@ export const handleZipReportDownload = async (req, res) => {
       generatedAt: new Date().toISOString(),
       workflow: "zip-report-download",
       input: {
-        uploadedFileName: req.file.originalname || path.basename(req.file.path),
-        uploadedZipPath: req.file.path,
-        extractedPath,
-        trackingRecordPath: record.recordPath,
+        uploadedFileName: toSafeDisplayFileName(req.file.originalname || req.file.path),
+        scanSessionId: record.id,
       },
       summary: {
         totalFindings: sortedIssues.length,
@@ -777,10 +787,7 @@ export const handleZipReportDownload = async (req, res) => {
 
     const reportFileName = `${reportBaseName}-security-report.${format}`;
 
-    res.setHeader("X-Zip-Upload-Path", req.file.path);
-    res.setHeader("X-Zip-Extracted-Path", extractedPath);
-    res.setHeader("X-Zip-Record-Path", record.recordPath);
-    res.setHeader("X-Report-Path", reportPath);
+    res.setHeader("X-Scan-Session-Id", record.id);
     res.setHeader("X-Report-Findings", String(sortedIssues.length));
     res.setHeader("X-Report-Format", format);
 

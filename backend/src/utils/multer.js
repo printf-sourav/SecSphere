@@ -2,11 +2,19 @@ import multer from "multer";
 import path from "path";
 import { fileURLToPath } from "url";
 import fs from "fs-extra";
+import { randomBytes } from "crypto";
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 const uploadDir = path.resolve(__dirname, "..", "uploads");
 fs.ensureDirSync(uploadDir);
+const MAX_UPLOAD_FILE_BYTES = Number(process.env.MAX_UPLOAD_FILE_BYTES || 25 * 1024 * 1024);
+
+const sanitizeOriginalName = (value) => {
+  const base = path.basename(String(value || "upload.bin"));
+  const normalized = base.replace(/[^a-zA-Z0-9._-]+/g, "_").replace(/^_+|_+$/g, "");
+  return normalized.slice(0, 120) || "upload.bin";
+};
 
 // Storage config
 const storage = multer.diskStorage({
@@ -14,8 +22,9 @@ const storage = multer.diskStorage({
     cb(null, uploadDir);
   },
   filename: function (req, file, cb) {
-    const uniqueName =
-      Date.now() + "-" + file.originalname.replace(/\s+/g, "_");
+    const safeName = sanitizeOriginalName(file.originalname);
+    const uniqueToken = randomBytes(6).toString("hex");
+    const uniqueName = `${Date.now()}-${uniqueToken}-${safeName}`;
     cb(null, uniqueName);
   },
 });
@@ -24,13 +33,7 @@ const storage = multer.diskStorage({
 const fileFilter = (req, file, cb) => {
   const allowedTypes = [".js", ".json", ".zip", ".txt"];
 
-  const originalName = String(file.originalname || "");
-  const ext = path.extname(originalName).toLowerCase();
-
-  if (/\.(php|exe|js|py|sh|bat)\./i.test(originalName)) {
-    cb(new Error("Suspicious double extension"), false);
-    return;
-  }
+  const ext = path.extname(sanitizeOriginalName(file.originalname)).toLowerCase();
 
   if (allowedTypes.includes(ext)) {
     cb(null, true);
@@ -43,6 +46,7 @@ export const upload = multer({
   storage,
   fileFilter,
   limits: {
-    fileSize: 5 * 1024 * 1024,
+    files: 1,
+    fileSize: MAX_UPLOAD_FILE_BYTES,
   },
 });
