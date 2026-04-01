@@ -31,27 +31,10 @@ const options = {
         ScanIssue: {
           type: "object",
           properties: {
-            id: { type: "string", example: "VULN-001" },
             title: { type: "string", example: "Unsafe eval usage" },
             severity: { type: "string", example: "high" },
-            type: { type: "string", example: "code" },
-            category: { type: "string", example: "semgrep" },
-            detector: { type: "string", example: "semgrep" },
             file: { type: "string", example: "src/app.js" },
             line: { type: "integer", example: 42 },
-            existsAt: { type: "string", example: "src/app.js:42" },
-            location: {
-              type: "object",
-              properties: {
-                file: { type: "string", example: "src/app.js" },
-                line: { type: "integer", example: 42 },
-                existsAt: { type: "string", example: "src/app.js:42" },
-              },
-            },
-            description: {
-              type: "string",
-              example: "Avoid eval because it can execute untrusted input.",
-            },
             explanation: {
               type: "string",
               example: "Dynamic execution can allow arbitrary code injection.",
@@ -68,97 +51,6 @@ const options = {
                   vulnerability: { type: "string" },
                   source: { type: "string", example: "user-learned" },
                   usageCount: { type: "integer", example: 3 },
-                  fix: { type: "string" },
-                },
-              },
-            },
-          },
-        },
-        ScanAnalytics: {
-          type: "object",
-          properties: {
-            scanId: { type: "string" },
-            durationMs: { type: "number", example: 12450 },
-            durationSec: { type: "number", example: 12.5 },
-            scannedFiles: { type: "integer", example: 152 },
-            fileLimitReached: { type: "boolean", example: false },
-            sourceType: { type: "string", example: "Repo" },
-            sourceLabel: { type: "string", example: "my-repo" },
-            aiEngine: { type: "string", example: "AWS Bedrock (Claude)" },
-            counts: {
-              type: "object",
-              properties: {
-                total: { type: "integer", example: 4 },
-                crit: { type: "integer", example: 1 },
-                high: { type: "integer", example: 1 },
-                med: { type: "integer", example: 1 },
-                low: { type: "integer", example: 1 },
-                code: { type: "integer", example: 2 },
-                cloud: { type: "integer", example: 1 },
-                iam: { type: "integer", example: 1 },
-                aiFixes: { type: "integer", example: 4 },
-              },
-            },
-            categoryBreakdown: {
-              type: "object",
-              additionalProperties: { type: "integer" },
-            },
-            issueLocations: {
-              type: "array",
-              items: {
-                type: "object",
-                properties: {
-                  id: { type: "string" },
-                  title: { type: "string" },
-                  severity: { type: "string" },
-                  type: { type: "string" },
-                  category: { type: "string" },
-                  detector: { type: "string" },
-                  file: { type: "string" },
-                  line: { type: "integer" },
-                  existsAt: { type: "string" },
-                },
-              },
-            },
-            scanStatus: {
-              type: "array",
-              items: {
-                type: "object",
-                properties: {
-                  key: { type: "string" },
-                  label: { type: "string" },
-                  status: { type: "string", example: "done" },
-                  detail: { type: "string" },
-                },
-              },
-            },
-            toolStatus: {
-              type: "object",
-              properties: {
-                semgrep: {
-                  type: "object",
-                  properties: {
-                    status: { type: "string" },
-                    reason: { type: "string" },
-                  },
-                },
-                trivy: {
-                  type: "object",
-                  properties: {
-                    status: { type: "string" },
-                    reason: { type: "string" },
-                  },
-                },
-              },
-            },
-            events: {
-              type: "array",
-              items: {
-                type: "object",
-                properties: {
-                  level: { type: "string" },
-                  at: { type: "string", format: "date-time" },
-                  message: { type: "string" },
                 },
               },
             },
@@ -202,9 +94,6 @@ const options = {
                 bestPractices: {
                   type: "array",
                   items: { type: "string" },
-                },
-                analytics: {
-                  $ref: "#/components/schemas/ScanAnalytics",
                 },
               },
             },

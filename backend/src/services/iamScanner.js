@@ -35,16 +35,16 @@ const collectRegexIssues = (text, rules) => {
 export const scanIAM = (text) => {
   const rules = [
     {
-      pattern: /"Action"\s*:\s*"\*"/g,
+      pattern: /"Action"\s*:\s*(?:"\*"|\[[^\]]*"\*"[^\]]*\])/g,
       title: "IAM wildcard action",
       severity: "medium",
-      description: "Wildcard IAM action may grant excessive privileges.",
+      description: "Wildcard IAM action may grant excessive privileges, including when declared inside arrays.",
     },
     {
-      pattern: /"Resource"\s*:\s*"\*"/g,
+      pattern: /"Resource"\s*:\s*(?:"\*"|\[[^\]]*"\*"[^\]]*\])/g,
       title: "IAM wildcard resource",
       severity: "medium",
-      description: "Wildcard IAM resource may broaden access scope.",
+      description: "Wildcard IAM resource may broaden access scope, including when declared inside arrays.",
     },
     {
       pattern: /AdministratorAccess/gi,

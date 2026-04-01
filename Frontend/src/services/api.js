@@ -1,6 +1,38 @@
 const rawBase = import.meta.env.VITE_API_BASE_URL || '/api';
 const API_BASE = rawBase.endsWith('/') ? rawBase.slice(0, -1) : rawBase;
 
+const normalizeScanData = (data = {}) => {
+  const fallbackResults = Array.isArray(data?.issues) ? data.issues : [];
+  const baseResults = Array.isArray(data?.results) ? data.results : fallbackResults;
+
+  const results = baseResults.map((item, index) => {
+    const line = Number(item?.line);
+
+    return {
+      ...item,
+      id: item?.id || `VULN-${String(index + 1).padStart(3, '0')}`,
+      severity: String(item?.severity || 'low').toLowerCase(),
+      file: item?.file || item?.location?.file || 'unknown',
+      line: Number.isFinite(line) && line > 0 ? line : undefined,
+    };
+  });
+
+  const score = Number(data?.score);
+  const predictedScore = Number(data?.predictedScore);
+
+  return {
+    ...data,
+    results,
+    score: Number.isFinite(score) ? score : 0,
+    predictedScore: Number.isFinite(predictedScore)
+      ? predictedScore
+      : (Number.isFinite(score) ? score : 0),
+    riskBand: String(data?.riskBand || 'low').toLowerCase(),
+    bestPractices: Array.isArray(data?.bestPractices) ? data.bestPractices : [],
+    projectContext: data?.projectContext || {},
+  };
+};
+
 /**
  * Run a security scan.
  * Accepts either a file (File object) or a repo URL string, plus an optional projectType.
@@ -29,11 +61,14 @@ export async function runScan({ file, repoUrl, projectType } = {}) {
 
   const json = await res.json();
 
-  if (!res.ok || !json.success) {
+  const payload = json?.data ?? json;
+  const isFailure = (typeof json?.success === 'boolean' && !json.success) || !res.ok;
+
+  if (isFailure) {
     throw new Error(json.message || `Scan failed (${res.status})`);
   }
 
-  return json.data;
+  return normalizeScanData(payload);
 }
 
 /**

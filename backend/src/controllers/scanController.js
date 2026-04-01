@@ -110,229 +110,6 @@ const runAllScanners = (text, filePath = "") => {
   return issues;
 };
 
-const toIssueType = (issue = {}) => {
-  const category = String(issue.category || "").toLowerCase();
-  if (category === "iam") {
-    return "iam";
-  }
-
-  if (["config", "misconfig", "dependency"].includes(category)) {
-    return "cloud";
-  }
-
-  if (["code", "semgrep", "gitignore"].includes(category)) {
-    return "code";
-  }
-
-  const title = String(issue.title || "").toLowerCase();
-  if (/iam|wildcard|principal|mfa|role|trust|policy|permission/.test(title)) {
-    return "iam";
-  }
-
-  if (/s3|bucket|security.?group|rds|vpc|subnet|cloudfront|open.?network|0\.0\.0\.0/.test(title)) {
-    return "cloud";
-  }
-
-  return "code";
-};
-
-const toIssueDetector = (issue = {}) => {
-  const category = String(issue.category || "").toLowerCase();
-  if (category === "semgrep") {
-    return "semgrep";
-  }
-
-  if (category === "dependency") {
-    return "trivy";
-  }
-
-  return "rule-engine";
-};
-
-const buildIssueLocation = (issue = {}) => {
-  const file = issue.file || "unknown";
-  const line = Number(issue.line || 0) || undefined;
-
-  return {
-    file,
-    line,
-    existsAt: line ? `${file}:${line}` : file,
-  };
-};
-
-const createAnalyticsPayload = ({
-  results,
-  inputType,
-  repoUrl,
-  sourceFileName,
-  scannedFiles,
-  fileLimitReached,
-  durationMs,
-  semgrepStatus,
-  trivyStatus,
-  score,
-  predictedScore,
-  riskBand,
-}) => {
-  const safeResults = Array.isArray(results) ? results : [];
-
-  const toStatusValue = (status) => {
-    const value = String(status || "").toLowerCase();
-    if (value === "done" || value === "ok") return "done";
-    if (value === "failed" || value === "error") return "failed";
-    if (value === "running") return "running";
-    return "skipped";
-  };
-
-  const severityCounts = safeResults.reduce(
-    (acc, issue) => {
-      const key = String(issue.severity || "low").toLowerCase();
-      if (key === "critical") acc.critical += 1;
-      else if (key === "high") acc.high += 1;
-      else if (key === "medium") acc.medium += 1;
-      else acc.low += 1;
-      return acc;
-    },
-    { critical: 0, high: 0, medium: 0, low: 0 }
-  );
-
-  const typeCounts = safeResults.reduce(
-    (acc, issue) => {
-      const key = String(issue.type || "code").toLowerCase();
-      if (key === "iam") acc.iam += 1;
-      else if (key === "cloud") acc.cloud += 1;
-      else acc.code += 1;
-      return acc;
-    },
-    { code: 0, cloud: 0, iam: 0 }
-  );
-
-  const categoryBreakdown = safeResults.reduce((acc, issue) => {
-    const key = String(issue.category || "unknown").toLowerCase();
-    acc[key] = (acc[key] || 0) + 1;
-    return acc;
-  }, {});
-
-  const counts = {
-    total: safeResults.length,
-    crit: severityCounts.critical,
-    high: severityCounts.high,
-    med: severityCounts.medium,
-    low: severityCounts.low,
-    code: typeCounts.code,
-    cloud: typeCounts.cloud,
-    iam: typeCounts.iam,
-    aiFixes: safeResults.filter((issue) => Boolean(issue.fix)).length,
-  };
-
-  const durationSec = Number((Number(durationMs || 0) / 1000).toFixed(1));
-  const nowIso = new Date().toISOString();
-  const aiEngine = String(process.env.AI_ENGINE_LABEL || "AWS Bedrock (Claude)");
-  const semgrepToolStatus = toStatusValue(semgrepStatus?.status);
-  const trivyToolStatus = toStatusValue(trivyStatus?.status);
-
-  const sourceLabel =
-    repoUrl || sourceFileName || (inputType === "ZIP" ? "uploaded-archive" : "uploaded-input");
-
-  const scanStatus = [
-    {
-      key: "code",
-      label: "Code Analysis",
-      status: "done",
-      detail:
-        semgrepToolStatus === "done"
-          ? "Rule engine + Semgrep completed"
-          : `Rule engine completed (${semgrepStatus?.reason || "Semgrep skipped"})`,
-    },
-    {
-      key: "cloud",
-      label: "Cloud Config",
-      status: "done",
-      detail:
-        trivyToolStatus === "done"
-          ? "Config scan + Trivy dependency scan completed"
-          : `Config scan completed (${trivyStatus?.reason || "Trivy skipped"})`,
-    },
-    {
-      key: "iam",
-      label: "IAM Policies",
-      status: scannedFiles > 0 ? "done" : "skipped",
-      detail: scannedFiles > 0 ? "IAM policy checks completed" : "No scannable files found",
-    },
-    {
-      key: "ai",
-      label: "AI Analysis",
-      status: "done",
-      detail: `AI explanations generated for ${safeResults.length} issues`,
-    },
-  ];
-
-  const events = [
-    {
-      level: "scan",
-      at: nowIso,
-      message: `Security scan completed in ${durationSec}s`,
-    },
-    ...(counts.crit > 0
-      ? [{ level: "alert", at: nowIso, message: `${counts.crit} critical vulnerabilities detected` }]
-      : []),
-    ...(counts.high > 0
-      ? [{ level: "warn", at: nowIso, message: `${counts.high} high-risk issues found` }]
-      : []),
-    ...(counts.med > 0
-      ? [{ level: "info", at: nowIso, message: `${counts.med} medium-risk findings` }]
-      : []),
-    {
-      level: "ai",
-      at: nowIso,
-      message: `Fix suggestions generated for ${counts.aiFixes} issues`,
-    },
-    {
-      level: "sys",
-      at: nowIso,
-      message: `AI engine: ${aiEngine}`,
-    },
-    {
-      level: "sys",
-      at: nowIso,
-      message: `Score: ${score}/100 | Predicted: ${predictedScore}/100 | Risk: ${String(riskBand || "unknown").toUpperCase()}`,
-    },
-    {
-      level: "sys",
-      at: nowIso,
-      message: `Source: ${sourceLabel}`,
-    },
-  ];
-
-  return {
-    scanId: `scan_${Date.now()}`,
-    durationMs: Number(durationMs || 0),
-    durationSec,
-    scannedFiles,
-    fileLimitReached,
-    sourceType: inputType,
-    sourceLabel,
-    aiEngine,
-    counts,
-    categoryBreakdown,
-    issueLocations: safeResults.map((issue) => ({
-      id: issue.id,
-      title: issue.title,
-      severity: issue.severity,
-      type: issue.type,
-      category: issue.category,
-      detector: issue.detector,
-      ...buildIssueLocation(issue),
-    })),
-    scanStatus,
-    toolStatus: {
-      semgrep: semgrepStatus,
-      trivy: trivyStatus,
-    },
-    events,
-  };
-};
-
 const isZipUpload = (file) => {
   if (!file) {
     return false;
@@ -351,19 +128,10 @@ const isZipUpload = (file) => {
 
 export const handleScan = async (req, res) => {
   const tempPaths = [];
-  const scanStartedAt = Date.now();
   let inputType = "unknown";
   let fileLimitReached = false;
   let repoUrl = "";
   let scannedFilePaths = [];
-  let semgrepStatus = {
-    status: "skipped",
-    reason: "Semgrep not executed",
-  };
-  let trivyStatus = {
-    status: "skipped",
-    reason: "Trivy not executed",
-  };
 
   try {
     console.log("[scan] request received");
@@ -482,11 +250,6 @@ export const handleScan = async (req, res) => {
         basePath: folderPath,
       });
 
-      semgrepStatus = {
-        status: semgrepResult.status === "ok" ? "done" : "skipped",
-        reason: semgrepResult.reason,
-      };
-
       if (semgrepResult.status === "ok") {
         allIssues.push(...semgrepResult.issues);
         console.log(`[scan] Semgrep detected ${semgrepResult.issues.length} issues`);
@@ -497,11 +260,6 @@ export const handleScan = async (req, res) => {
       const trivyResult = await runTrivyDependencyScan(folderPath, {
         basePath: folderPath,
       });
-
-      trivyStatus = {
-        status: trivyResult.status === "ok" ? "done" : "skipped",
-        reason: trivyResult.reason,
-      };
 
       if (trivyResult.status === "ok") {
         allIssues.push(...trivyResult.issues);
@@ -515,11 +273,6 @@ export const handleScan = async (req, res) => {
       const semgrepResult = await runSemgrepScan(req.file.path, {
         basePath: path.dirname(req.file.path),
       });
-
-      semgrepStatus = {
-        status: semgrepResult.status === "ok" ? "done" : "skipped",
-        reason: semgrepResult.reason,
-      };
 
       if (semgrepResult.status === "ok") {
         const normalizedSemgrepIssues = semgrepResult.issues.map((issue) => ({
@@ -550,7 +303,7 @@ export const handleScan = async (req, res) => {
     console.log("[scan] AI processing started...");
 
     const results = await Promise.all(
-      aiIssues.map(async (issue, index) => {
+      aiIssues.map(async (issue) => {
         const learnedExamples = await getLearnedFixExamples({
           title: issue.title,
           projectType: projectContext.domain,
@@ -562,20 +315,11 @@ export const handleScan = async (req, res) => {
           learnedExamples,
         });
 
-        const location = buildIssueLocation(issue);
-
         const result = {
-          id: `VULN-${String(index + 1).padStart(3, "0")}`,
           title: issue.title,
           severity: issue.severity,
-          category: issue.category || "unknown",
-          detector: toIssueDetector(issue),
-          type: toIssueType(issue),
           file: issue.file,
           line: issue.line,
-          location,
-          existsAt: location.existsAt,
-          description: issue.description,
         };
 
         if (ai?.explanation && ai?.fix) {
@@ -608,20 +352,6 @@ export const handleScan = async (req, res) => {
 
     const score = calculateScore(limitedIssues);
     const riskPrediction = predictRiskScore(limitedIssues, projectContext);
-    const analytics = createAnalyticsPayload({
-      results,
-      inputType,
-      repoUrl,
-      sourceFileName: singleFileName,
-      scannedFiles,
-      fileLimitReached,
-      durationMs: Date.now() - scanStartedAt,
-      semgrepStatus,
-      trivyStatus,
-      score,
-      predictedScore: riskPrediction.predictedScore,
-      riskBand: riskPrediction.riskBand,
-    });
 
     return res.json(
       new ApiResponse(
@@ -635,7 +365,6 @@ export const handleScan = async (req, res) => {
           riskModel: riskPrediction.model,
           projectContext,
           bestPractices,
-          analytics,
         },
         "Scan completed"
       )

@@ -4,7 +4,7 @@
   "version": "1.0.0",
   "scripts": {
     "dev": "bash -c 'npm run dev:backend & npm run dev:frontend; wait'",
-    "dev:backend": "npm --prefix backend run dev",
+    "dev:backend": "npm --prefix backend run start",
     "dev:frontend": "npm --prefix Frontend run dev",
     "build": "npm --prefix Frontend run build",
     "start": "npm --prefix backend run start"

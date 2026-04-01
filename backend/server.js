@@ -18,7 +18,23 @@ const FRONTEND_DIST_PATH = path.resolve(__dirname, "../Frontend/dist");
 const frontendOrigins = String(process.env.FRONTEND_ORIGIN || "http://localhost:5173")
   .split(",")
   .map((origin) => origin.trim())
+  .map((origin) => origin.replace(/\/$/, ""))
   .filter(Boolean);
+
+const allowLocalhostCors =
+  String(
+    process.env.ALLOW_LOCALHOST_CORS ||
+      (process.env.NODE_ENV !== "production" ? "true" : "false")
+  ).toLowerCase() === "true";
+
+const isLocalDevOrigin = (origin) => {
+  try {
+    const url = new URL(origin);
+    return url.protocol === "http:" && ["localhost", "127.0.0.1"].includes(url.hostname);
+  } catch {
+    return false;
+  }
+};
 
 app.use(
   cors({
@@ -29,7 +45,14 @@ app.use(
         return;
       }
 
-      if (frontendOrigins.includes(origin)) {
+      const normalizedOrigin = String(origin).replace(/\/$/, "");
+
+      if (frontendOrigins.includes(normalizedOrigin)) {
+        callback(null, true);
+        return;
+      }
+
+      if (allowLocalhostCors && isLocalDevOrigin(normalizedOrigin)) {
         callback(null, true);
         return;
       }
