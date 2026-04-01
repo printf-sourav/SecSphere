@@ -215,18 +215,28 @@ const DashboardPage = () => {
   // Scan history
   const [history, setHistory] = useState([])
 
-  // Derive vulnerability list from API data
-  const results = scanData?.results || []
+  // Analytics and issue details are sourced from backend API payload.
+  const analytics = scanData?.analytics || {}
+  const results = Array.isArray(scanData?.results) ? scanData.results : []
   const vulns = results.map((r, i) => ({
-    id: `VULN-${String(i + 1).padStart(3, '0')}`,
+    id: r.id || `VULN-${String(i + 1).padStart(3, '0')}`,
     title: r.title,
     severity: r.severity,
     file: r.file || 'unknown',
     line: r.line,
+    existsAt: r.existsAt || (r.location?.existsAt || `${r.file || 'unknown'}${r.line ? `:${r.line}` : ''}`),
+    location: r.location || {
+      file: r.file || 'unknown',
+      line: r.line,
+      existsAt: r.existsAt || `${r.file || 'unknown'}${r.line ? `:${r.line}` : ''}`,
+    },
+    detector: r.detector || 'ai-api',
+    category: r.category || 'unknown',
+    description: r.description || '',
     explanation: r.explanation,
     fix: r.fix,
     learningHints: r.learningHints || [],
-    type: inferType(r.title),
+    type: r.type || inferType(r.title),
     ...sev(r.severity),
   }))
 
@@ -234,16 +244,49 @@ const DashboardPage = () => {
   const current = filtered[selectedVuln] || filtered[0]
   const currentFixOptions = current ? buildFixOptions(current) : []
 
+  const countsFromApi = analytics.counts || {}
   const counts = {
-    total: vulns.length,
-    crit: vulns.filter(v => v.label === 'CRIT').length,
-    high: vulns.filter(v => v.label === 'HIGH').length,
-    med: vulns.filter(v => v.label === 'MED').length,
-    low: vulns.filter(v => v.label === 'LOW').length,
-    code: vulns.filter(v => v.type === 'code').length,
-    cloud: vulns.filter(v => v.type === 'cloud').length,
-    iam: vulns.filter(v => v.type === 'iam').length,
+    total: countsFromApi.total ?? vulns.length,
+    crit: countsFromApi.crit ?? vulns.filter(v => v.label === 'CRIT').length,
+    high: countsFromApi.high ?? vulns.filter(v => v.label === 'HIGH').length,
+    med: countsFromApi.med ?? vulns.filter(v => v.label === 'MED').length,
+    low: countsFromApi.low ?? vulns.filter(v => v.label === 'LOW').length,
+    code: countsFromApi.code ?? vulns.filter(v => v.type === 'code').length,
+    cloud: countsFromApi.cloud ?? vulns.filter(v => v.type === 'cloud').length,
+    iam: countsFromApi.iam ?? vulns.filter(v => v.type === 'iam').length,
+    aiFixes: countsFromApi.aiFixes ?? vulns.filter(v => v.fix).length,
   }
+
+  const scanStatusItems = Array.isArray(analytics.scanStatus) && analytics.scanStatus.length
+    ? analytics.scanStatus
+    : [
+      { key: 'code', label: 'Code Analysis', status: 'done' },
+      { key: 'cloud', label: 'Cloud Config', status: 'done' },
+      { key: 'iam', label: 'IAM Policies', status: 'done' },
+      { key: 'ai', label: 'AI Analysis', status: 'done' },
+    ]
+
+  const activityEvents = Array.isArray(analytics.events) ? analytics.events : []
+  const displayScanTime = Number.isFinite(Number(analytics.durationSec))
+    ? Number(analytics.durationSec)
+    : Number(scanTime || 0)
+  const sourceLabel = analytics.sourceLabel || repoUrl || uploadedFile?.name || 'scan'
+  const aiEngineLabel = analytics.aiEngine || 'AWS Bedrock (Claude)'
+  const effectiveActivityEvents = activityEvents.length
+    ? activityEvents
+    : [
+      { level: 'scan', message: `Security scan completed in ${displayScanTime}s` },
+      ...(counts.crit > 0 ? [{ level: 'alert', message: `${counts.crit} critical vulnerabilities detected` }] : []),
+      ...(counts.high > 0 ? [{ level: 'warn', message: `${counts.high} high-risk issues found` }] : []),
+      ...(counts.med > 0 ? [{ level: 'info', message: `${counts.med} medium-risk findings` }] : []),
+      { level: 'ai', message: `Fix suggestions generated for ${counts.aiFixes} issues` },
+      { level: 'sys', message: `AI engine: ${aiEngineLabel}` },
+      {
+        level: 'sys',
+        message: `Score: ${scanData?.score ?? 0}/100 | Predicted: ${scanData?.predictedScore ?? 0}/100 | Risk: ${String(scanData?.riskBand || 'low').toUpperCase()}`,
+      },
+      { level: 'sys', message: `Source: ${sourceLabel}` },
+    ]
 
   const handleTabSwitch = (tab) => {
     setActiveTab(tab)
@@ -288,7 +331,9 @@ const DashboardPage = () => {
         repoUrl: repoUrl || undefined,
         projectType: projectType || undefined,
       })
-      const elapsed = ((Date.now() - t0) / 1000).toFixed(1)
+      const elapsed = Number(
+        data?.analytics?.durationSec ?? ((Date.now() - t0) / 1000).toFixed(1)
+      )
       setScanTime(elapsed)
       setScanData(data)
       setScanState('done')
@@ -296,8 +341,8 @@ const DashboardPage = () => {
       // Add to history
       setHistory(prev => [{
         timestamp: new Date().toLocaleTimeString(),
-        source: repoUrl || uploadedFile?.name || 'unknown',
-        issueCount: data.results?.length || 0,
+        source: data?.analytics?.sourceLabel || repoUrl || uploadedFile?.name || 'unknown',
+        issueCount: data?.analytics?.counts?.total ?? data.results?.length ?? 0,
         score: data.score,
         riskBand: data.riskBand,
       }, ...prev].slice(0, 10))
@@ -400,7 +445,7 @@ const DashboardPage = () => {
               </div>
               <p className="text-[10px] text-[#6b6271]">
                 {scanState === 'done'
-                  ? `Last scan: just now | ${vulns.length} issues found in ${scanTime}s`
+                  ? `Last scan: just now | ${vulns.length} issues found in ${displayScanTime}s`
                   : scanState === 'error'
                   ? `Scan failed after ${scanTime}s`
                   : 'Upload files or paste a repo URL to begin scanning'
@@ -852,8 +897,8 @@ const DashboardPage = () => {
                 {[
                   { label: 'SCORE', value: score, suffix: '/100', color: bandColor },
                   { label: 'PREDICTED', value: predictedScore, suffix: '/100', color: bandColor },
-                  { label: 'SCAN TIME', value: scanTime, suffix: 's', color: '#00ff41' },
-                  { label: 'AI FIXES', value: vulns.filter(v => v.fix).length, suffix: '', color: '#00ff41' },
+                  { label: 'SCAN TIME', value: displayScanTime, suffix: 's', color: '#00ff41' },
+                  { label: 'AI FIXES', value: counts.aiFixes, suffix: '', color: '#00ff41' },
                   { label: 'APPLIED', value: Object.keys(fixApplied).length, suffix: `/${vulns.length}`, color: '#00ff41' },
                   { label: 'RISK', value: riskBand.toUpperCase(), suffix: '', color: bandColor, isText: true },
                 ].map((m, i) => (
@@ -877,15 +922,24 @@ const DashboardPage = () => {
               <div className="terminal !rounded-md mb-5">
                 <div className="px-4 py-2.5 text-xs flex flex-wrap items-center gap-x-6 gap-y-1">
                   <span className="text-[#6b6271]">❯ scan-status:</span>
-                  {['Code Analysis', 'Cloud Config', 'IAM Policies', 'AI Analysis'].map((step, i) => (
-                    <div key={i} className="flex items-center gap-2">
-                      <span className="text-[#00ff41]" style={{ textShadow: '0 0 4px rgba(0,255,65,0.5)' }}>✓</span>
-                      <span className="text-[#6b6271]">{step}</span>
-                      <span className="text-[#00ff41] text-[10px] font-bold">DONE</span>
+                  {scanStatusItems.map((step, i) => {
+                    const status = String(step.status || 'done').toLowerCase()
+                    const isDone = status === 'done'
+                    const isSkipped = status === 'skipped'
+                    const isFailed = status === 'failed' || status === 'error'
+                    const icon = isDone ? '✓' : isSkipped ? '•' : isFailed ? '✕' : '…'
+                    const color = isDone ? '#00ff41' : isSkipped ? '#F4998D' : isFailed ? '#F40000' : '#F4998D'
+
+                    return (
+                    <div key={step.key || i} className="flex items-center gap-2" title={step.detail || ''}>
+                      <span style={{ color, textShadow: `0 0 4px ${color}80` }}>{icon}</span>
+                      <span className="text-[#6b6271]">{step.label}</span>
+                      <span className="text-[10px] font-bold uppercase" style={{ color }}>{status}</span>
                     </div>
-                  ))}
+                    )
+                  })}
                   <span className="text-[#6b6271] ml-auto text-[10px]">
-                    {repoUrl ? repoUrl.split('/').pop()?.replace('.git', '') : uploadedFile?.name || 'scan'} | {scanTime}s
+                    {sourceLabel} | {displayScanTime}s
                   </span>
                 </div>
               </div>
@@ -946,7 +1000,8 @@ const DashboardPage = () => {
                             <div className="w-1.5 h-1.5 rounded-full shrink-0 mt-1.5" style={{ backgroundColor: v.color, boxShadow: `0 0 5px ${v.color}` }} />
                             <div className="flex-1 min-w-0">
                               <p className="text-white text-[11px] font-medium truncate">{v.title}</p>
-                              <p className="text-[#6b6271] text-[9px] font-mono mt-0.5">{v.file}{v.line ? `:${v.line}` : ''}</p>
+                              <p className="text-[#6b6271] text-[9px] font-mono mt-0.5">{v.existsAt}</p>
+                              <p className="text-[#6b6271]/70 text-[8px] uppercase mt-0.5 tracking-wide">{v.detector} | {v.category}</p>
                               {v.learningHints?.length > 0 && (
                                 <span className="text-[8px] text-[#00ff41] font-bold mt-0.5 inline-block">✦ LEARNED FIX</span>
                               )}
@@ -985,7 +1040,8 @@ const DashboardPage = () => {
                           </div>
 
                           <p className="text-white font-bold text-sm">{current.title}</p>
-                          <p className="text-[#6b6271] text-[10px] font-mono">{current.file}{current.line ? `:${current.line}` : ''}</p>
+                          <p className="text-[#6b6271] text-[10px] font-mono">Location: {current.existsAt}</p>
+                          <p className="text-[#6b6271] text-[9px] uppercase tracking-wide">Detector: {current.detector} | Category: {current.category}</p>
 
                           <div className="flex gap-2">
                             <span className="text-[8px] font-bold px-2 py-0.5 rounded border border-[#F40000]/20 text-[#F40000] uppercase tracking-widest">{current.type}</span>
@@ -993,6 +1049,13 @@ const DashboardPage = () => {
                           </div>
 
                           <div className="h-px bg-[#F40000]/10" />
+
+                          {current.description && (
+                            <div>
+                              <p className="text-[9px] text-[#F4998D] font-bold tracking-wider mb-2">DETECTED PATTERN:</p>
+                              <p className="text-[#c8c0d0] leading-relaxed text-[10px]">{current.description}</p>
+                            </div>
+                          )}
 
                           {current.explanation ? (
                             <div>
@@ -1166,14 +1229,27 @@ const DashboardPage = () => {
                   <span className="ml-2 text-[9px] text-[#6b6271]">activity-log — latest events</span>
                 </div>
                 <div className="p-4 text-[10px] space-y-1.5 font-mono max-h-[150px] overflow-y-auto">
-                  <p><span className="text-[#6b6271]">[{new Date().toLocaleTimeString()}]</span> <span className="text-[#00ff41]">SCAN</span> Security scan completed in {scanTime}s</p>
-                  {counts.crit > 0 && <p><span className="text-[#6b6271]">[{new Date().toLocaleTimeString()}]</span> <span className="text-[#F40000]">ALERT</span> {counts.crit} critical vulnerabilities detected</p>}
-                  {counts.high > 0 && <p><span className="text-[#6b6271]">[{new Date().toLocaleTimeString()}]</span> <span className="text-[#F44E3F]">WARN</span> {counts.high} high-risk issues found</p>}
-                  {counts.med > 0 && <p><span className="text-[#6b6271]">[{new Date().toLocaleTimeString()}]</span> <span className="text-[#F4998D]">INFO</span> {counts.med} medium-risk findings</p>}
-                  <p><span className="text-[#6b6271]">[{new Date().toLocaleTimeString()}]</span> <span className="text-[#00ff41]">AI</span> Fix suggestions generated for {vulns.filter(v => v.fix).length} threats</p>
-                  <p><span className="text-[#6b6271]">[{new Date().toLocaleTimeString()}]</span> <span className="text-[#6b6271]">SYS</span> AI engine: AWS Bedrock (Claude)</p>
-                  <p><span className="text-[#6b6271]">[{new Date().toLocaleTimeString()}]</span> <span className="text-[#6b6271]">SYS</span> Score: {score}/100 | Predicted: {predictedScore}/100 | Risk: {riskBand}</p>
-                  <p><span className="text-[#6b6271]">[{new Date().toLocaleTimeString()}]</span> <span className="text-[#6b6271]">SYS</span> Source: {repoUrl || uploadedFile?.name || 'uploaded'}</p>
+                  {effectiveActivityEvents.map((event, index) => {
+                    const level = String(event?.level || 'sys').toLowerCase()
+                    const at = event?.at ? new Date(event.at).toLocaleTimeString() : new Date().toLocaleTimeString()
+
+                    const levelStyle = (() => {
+                      if (level === 'scan') return { label: 'SCAN', color: '#00ff41' }
+                      if (level === 'alert') return { label: 'ALERT', color: '#F40000' }
+                      if (level === 'warn') return { label: 'WARN', color: '#F44E3F' }
+                      if (level === 'info') return { label: 'INFO', color: '#F4998D' }
+                      if (level === 'ai') return { label: 'AI', color: '#00ff41' }
+                      return { label: 'SYS', color: '#6b6271' }
+                    })()
+
+                    return (
+                      <p key={`${level}-${index}-${String(event?.message || '').slice(0, 12)}`}>
+                        <span className="text-[#6b6271]">[{at}]</span>{' '}
+                        <span style={{ color: levelStyle.color }}>{levelStyle.label}</span>{' '}
+                        {event?.message || 'No activity message'}
+                      </p>
+                    )
+                  })}
                 </div>
               </div>
 

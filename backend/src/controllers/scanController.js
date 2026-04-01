@@ -176,6 +176,14 @@ const createAnalyticsPayload = ({
 }) => {
   const safeResults = Array.isArray(results) ? results : [];
 
+  const toStatusValue = (status) => {
+    const value = String(status || "").toLowerCase();
+    if (value === "done" || value === "ok") return "done";
+    if (value === "failed" || value === "error") return "failed";
+    if (value === "running") return "running";
+    return "skipped";
+  };
+
   const severityCounts = safeResults.reduce(
     (acc, issue) => {
       const key = String(issue.severity || "low").toLowerCase();
@@ -219,15 +227,44 @@ const createAnalyticsPayload = ({
 
   const durationSec = Number((Number(durationMs || 0) / 1000).toFixed(1));
   const nowIso = new Date().toISOString();
+  const aiEngine = String(process.env.AI_ENGINE_LABEL || "AWS Bedrock (Claude)");
+  const semgrepToolStatus = toStatusValue(semgrepStatus?.status);
+  const trivyToolStatus = toStatusValue(trivyStatus?.status);
 
   const sourceLabel =
     repoUrl || sourceFileName || (inputType === "ZIP" ? "uploaded-archive" : "uploaded-input");
 
   const scanStatus = [
-    { key: "code", label: "Code Analysis", status: "done" },
-    { key: "cloud", label: "Cloud Config", status: "done" },
-    { key: "iam", label: "IAM Policies", status: "done" },
-    { key: "ai", label: "AI Analysis", status: "done" },
+    {
+      key: "code",
+      label: "Code Analysis",
+      status: "done",
+      detail:
+        semgrepToolStatus === "done"
+          ? "Rule engine + Semgrep completed"
+          : `Rule engine completed (${semgrepStatus?.reason || "Semgrep skipped"})`,
+    },
+    {
+      key: "cloud",
+      label: "Cloud Config",
+      status: "done",
+      detail:
+        trivyToolStatus === "done"
+          ? "Config scan + Trivy dependency scan completed"
+          : `Config scan completed (${trivyStatus?.reason || "Trivy skipped"})`,
+    },
+    {
+      key: "iam",
+      label: "IAM Policies",
+      status: scannedFiles > 0 ? "done" : "skipped",
+      detail: scannedFiles > 0 ? "IAM policy checks completed" : "No scannable files found",
+    },
+    {
+      key: "ai",
+      label: "AI Analysis",
+      status: "done",
+      detail: `AI explanations generated for ${safeResults.length} issues`,
+    },
   ];
 
   const events = [
@@ -253,6 +290,11 @@ const createAnalyticsPayload = ({
     {
       level: "sys",
       at: nowIso,
+      message: `AI engine: ${aiEngine}`,
+    },
+    {
+      level: "sys",
+      at: nowIso,
       message: `Score: ${score}/100 | Predicted: ${predictedScore}/100 | Risk: ${String(riskBand || "unknown").toUpperCase()}`,
     },
     {
@@ -270,6 +312,7 @@ const createAnalyticsPayload = ({
     fileLimitReached,
     sourceType: inputType,
     sourceLabel,
+    aiEngine,
     counts,
     categoryBreakdown,
     issueLocations: safeResults.map((issue) => ({
@@ -519,6 +562,8 @@ export const handleScan = async (req, res) => {
           learnedExamples,
         });
 
+        const location = buildIssueLocation(issue);
+
         const result = {
           id: `VULN-${String(index + 1).padStart(3, "0")}`,
           title: issue.title,
@@ -528,8 +573,8 @@ export const handleScan = async (req, res) => {
           type: toIssueType(issue),
           file: issue.file,
           line: issue.line,
-          location: buildIssueLocation(issue),
-          existsAt: buildIssueLocation(issue).existsAt,
+          location,
+          existsAt: location.existsAt,
           description: issue.description,
         };
 

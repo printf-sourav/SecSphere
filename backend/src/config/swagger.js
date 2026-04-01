@@ -84,6 +84,7 @@ const options = {
             fileLimitReached: { type: "boolean", example: false },
             sourceType: { type: "string", example: "Repo" },
             sourceLabel: { type: "string", example: "my-repo" },
+            aiEngine: { type: "string", example: "AWS Bedrock (Claude)" },
             counts: {
               type: "object",
               properties: {
@@ -127,6 +128,7 @@ const options = {
                   key: { type: "string" },
                   label: { type: "string" },
                   status: { type: "string", example: "done" },
+                  detail: { type: "string" },
                 },
               },
             },
