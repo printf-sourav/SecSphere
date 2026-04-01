@@ -103,17 +103,20 @@ async function scanCurrentFile(state) {
 
     const panel = getOrCreateResultsPanel(state);
     panel.reveal(vscode.ViewColumn.Beside);
-    panel.webview.postMessage({ type: "loading", message: "Scanning current file..." });
+    emitPanelState(state, "initializing", "Preparing current file scan", true);
     vscode.window.showInformationMessage("Scan started...");
 
     try {
+        emitPanelState(state, "payload", "Building file payload", true);
         const formData = new FormData();
         formData.append("file", Buffer.from(content, "utf8"), {
             filename: path.basename(document.fileName) || "untitled.js",
             contentType: "text/plain",
         });
 
+        emitPanelState(state, "api_call", "Sending file to scanner API", true);
         const scanData = await sendToBackend(formData);
+        emitPanelState(state, "normalizing", "Normalizing scan response", true);
         const normalized = normalizeScanResults(scanData, {
             scope: "current",
             workspaceRoot: getWorkspaceRootForUri(document.uri),
@@ -122,11 +125,14 @@ async function scanCurrentFile(state) {
 
         updateIssuesState(state, normalized.issues, normalized.summary, normalized.score);
         renderResultsInWebview(state, "Current File");
+        emitPanelState(state, "decorate", "Applying highlights to editor", true);
         applyDecorationsToVisibleEditors(state);
+        emitPanelState(state, "completed", "Current file scan completed", false);
 
         vscode.window.showInformationMessage("Scan completed");
     } catch (error) {
         const message = toErrorMessage(error);
+        emitPanelState(state, "failed", message, false);
         panel.webview.postMessage({ type: "error", message });
         vscode.window.showErrorMessage(message);
     }
@@ -144,22 +150,26 @@ async function scanWorkspace(state) {
 
     const panel = getOrCreateResultsPanel(state);
     panel.reveal(vscode.ViewColumn.Beside);
-    panel.webview.postMessage({ type: "loading", message: "Scanning workspace..." });
+    emitPanelState(state, "initializing", "Preparing workspace scan", true);
     vscode.window.showInformationMessage("Scan started...");
 
     let zipPath;
 
     try {
+        emitPanelState(state, "discovery", "Collecting eligible workspace files", true);
         const files = await getWorkspaceFiles(workspaceRoot);
         if (!files.length) {
             const emptyMessage = "No eligible workspace files found to scan.";
+            emitPanelState(state, "failed", emptyMessage, false);
             panel.webview.postMessage({ type: "error", message: emptyMessage });
             vscode.window.showWarningMessage(emptyMessage);
             return;
         }
 
+        emitPanelState(state, "packaging", "Creating workspace zip archive", true);
         zipPath = await createWorkspaceZip(files);
 
+        emitPanelState(state, "api_call", "Uploading archive to scanner API", true);
         const formData = new FormData();
         formData.append("file", fs.createReadStream(zipPath), {
             filename: `workspace-scan-${Date.now()}.zip`,
@@ -167,6 +177,7 @@ async function scanWorkspace(state) {
         });
 
         const scanData = await sendToBackend(formData);
+        emitPanelState(state, "normalizing", "Processing API scan results", true);
         const normalized = normalizeScanResults(scanData, {
             scope: "workspace",
             workspaceRoot,
@@ -175,11 +186,14 @@ async function scanWorkspace(state) {
 
         updateIssuesState(state, normalized.issues, normalized.summary, normalized.score);
         renderResultsInWebview(state, "Workspace");
+        emitPanelState(state, "decorate", "Applying highlights to open editors", true);
         applyDecorationsToVisibleEditors(state);
+        emitPanelState(state, "completed", "Workspace scan completed", false);
 
         vscode.window.showInformationMessage("Scan completed");
     } catch (error) {
         const message = toErrorMessage(error);
+        emitPanelState(state, "failed", message, false);
         panel.webview.postMessage({ type: "error", message });
         vscode.window.showErrorMessage(message);
     } finally {
@@ -194,18 +208,22 @@ async function scanWorkspace(state) {
  * @param {string} issueId
  */
 async function applyFix(issueId, state) {
+    emitPanelState(state, "fix_prepare", "Preparing auto-fix", true);
     const issue = state.issuesById.get(issueId);
     if (!issue) {
+        emitPanelState(state, "fix_failed", "Unable to find issue for fix application", false);
         vscode.window.showErrorMessage("Unable to find issue for fix application.");
         return;
     }
 
     if (!issue.fix || !issue.fix.trim()) {
+        emitPanelState(state, "fix_failed", "Issue does not include an auto-fix snippet", false);
         vscode.window.showErrorMessage("This issue does not include an auto-fix snippet.");
         return;
     }
 
     if (!issue.absoluteFilePath) {
+        emitPanelState(state, "fix_failed", "No target file available for fix application", false);
         vscode.window.showErrorMessage("No target file available to apply this fix.");
         return;
     }
@@ -214,6 +232,7 @@ async function applyFix(issueId, state) {
     try {
         document = await vscode.workspace.openTextDocument(issue.absoluteFilePath);
     } catch {
+        emitPanelState(state, "fix_failed", "Could not open target file for fix application", false);
         vscode.window.showErrorMessage("Could not open file for fix application.");
         return;
     }
@@ -221,20 +240,24 @@ async function applyFix(issueId, state) {
     const editor = await vscode.window.showTextDocument(document, { preview: false });
     const range = resolveIssueRange(issue, document, editor);
     if (!range) {
+        emitPanelState(state, "fix_failed", "Unable to determine vulnerable range", false);
         vscode.window.showErrorMessage(
             "Unable to determine vulnerable range. Select code manually and apply fix again."
         );
         return;
     }
 
+    emitPanelState(state, "fix_build", "Generating safe patch", true);
     const safePatch = buildSafePatch(issue, document, range);
     if (!safePatch) {
+        emitPanelState(state, "fix_failed", "No safe auto-fix could be generated", false);
         vscode.window.showErrorMessage(
             "No safe auto-fix could be generated. The model output was not valid code for this file."
         );
         return;
     }
 
+    emitPanelState(state, "fix_apply", "Applying patch to editor", true);
     const didApply = await editor.edit((editBuilder) => {
         if (safePatch.mode === "document") {
             const fullRange = new vscode.Range(
@@ -249,16 +272,42 @@ async function applyFix(issueId, state) {
     });
 
     if (!didApply) {
+        emitPanelState(state, "fix_failed", "Failed to apply fix in editor", false);
         vscode.window.showErrorMessage("Failed to apply fix in editor.");
         return;
     }
 
+    emitPanelState(state, "fix_done", "Fix applied successfully", false);
     vscode.window.showInformationMessage("Fix applied successfully");
 
     const remainingIssues = state.issues.filter((item) => item.id !== issueId);
     updateIssuesState(state, remainingIssues, state.summary, state.score);
     renderResultsInWebview(state, "Updated Results");
     applyDecorationsToVisibleEditors(state);
+}
+
+/**
+ * @param {RuntimeState} state
+ * @param {string} stage
+ * @param {string} detail
+ * @param {boolean} loading
+ */
+function emitPanelState(state, stage, detail, loading) {
+    if (!state.panel) {
+        return;
+    }
+
+    state.panel.webview.postMessage({
+        type: "state",
+        stage,
+        detail,
+        loading,
+        timestamp: new Date().toISOString(),
+    });
+
+    if (loading) {
+        state.panel.webview.postMessage({ type: "loading", message: detail || "Working..." });
+    }
 }
 
 /**
@@ -1063,364 +1112,510 @@ function getWebviewHtml() {
     <style>
         :root {
             color-scheme: dark;
-            --bg: var(--vscode-editor-background);
-            --panel: color-mix(in srgb, var(--vscode-editor-background) 78%, #0f141a 22%);
-            --panel-soft: color-mix(in srgb, var(--vscode-editor-background) 86%, #1b222b 14%);
-            --border: color-mix(in srgb, var(--vscode-widget-border, #2a2a2a) 70%, #3f4954 30%);
-            --text: var(--vscode-editor-foreground);
-            --muted: var(--vscode-descriptionForeground, #9aa6b2);
-            --brand: #2eaadc;
-            --brand-glow: #56d3ff;
-            --high: #ff5f56;
-            --medium: #f7b529;
-            --low: #29c27c;
-            --shadow: 0 14px 32px rgba(0, 0, 0, 0.28);
+            --bg: #090809;
+            --shell: #120d0e;
+            --panel: #180f10;
+            --panel-2: #231314;
+            --line: #3a1a1d;
+            --line-2: #5a2326;
+            --text: #fff2f0;
+            --muted: #f3b8b2;
+            --high: #f40000;
+            --medium: #f44e3f;
+            --low: #f4796b;
+            --accent: #f4998d;
+            --accent-2: #f44e3f;
+            --glow: rgba(244, 0, 0, 0.24);
         }
 
-        * {
-            box-sizing: border-box;
-            font-family: var(--vscode-font-family);
-        }
+        * { box-sizing: border-box; }
 
         body {
             margin: 0;
-            padding: 14px;
+            padding: 10px;
+            background: var(--bg);
             color: var(--text);
-            background:
-                radial-gradient(1200px 600px at 88% -5%, rgba(46, 170, 220, 0.13), transparent 45%),
-                radial-gradient(900px 420px at -10% 120%, rgba(86, 211, 255, 0.08), transparent 45%),
-                var(--bg);
-        }
-
-        .hidden {
-            display: none;
-        }
-
-        .card {
-            position: relative;
-            background: var(--panel);
-            border: 1px solid var(--border);
-            border-radius: 14px;
-            box-shadow: var(--shadow);
-            margin-bottom: 12px;
-            overflow: hidden;
-        }
-
-        .hero {
-            padding: 14px;
-            background:
-                linear-gradient(120deg, rgba(46, 170, 220, 0.15), rgba(8, 12, 18, 0) 42%),
-                var(--panel);
-        }
-
-        .hero-top {
-            display: flex;
-            justify-content: space-between;
-            gap: 10px;
-            align-items: flex-start;
-        }
-
-        .title {
-            margin: 0;
-            font-size: 15px;
-            letter-spacing: 0.01em;
-            font-weight: 700;
-        }
-
-        .subtitle {
-            margin: 4px 0 0;
-            color: var(--muted);
+            font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", "Courier New", monospace;
             font-size: 12px;
             line-height: 1.45;
         }
 
-        .scope-pill {
-            border: 1px solid color-mix(in srgb, var(--brand) 45%, transparent 55%);
-            color: var(--brand-glow);
-            background: color-mix(in srgb, var(--brand) 14%, transparent 86%);
-            border-radius: 999px;
-            padding: 4px 10px;
-            font-size: 11px;
-            white-space: nowrap;
-            text-transform: uppercase;
-            letter-spacing: 0.08em;
-            font-weight: 700;
-        }
+        .hidden { display: none; }
 
-        .stats {
-            margin-top: 12px;
-            display: grid;
-            grid-template-columns: repeat(4, minmax(0, 1fr));
-            gap: 8px;
-        }
-
-        .stat {
-            background: var(--panel-soft);
-            border: 1px solid var(--border);
+        .terminal-shell {
+            border: 1px solid var(--line);
+            background: linear-gradient(180deg, rgba(25, 14, 15, 0.98), rgba(10, 7, 8, 0.98));
             border-radius: 10px;
-            padding: 8px;
-            min-height: 58px;
-        }
-
-        .stat .k {
-            font-size: 11px;
-            color: var(--muted);
-            text-transform: uppercase;
-            letter-spacing: 0.08em;
-            margin-bottom: 4px;
-        }
-
-        .stat .v {
-            font-size: 18px;
-            font-weight: 700;
-        }
-
-        .v-high {
-            color: var(--high);
-        }
-
-        .v-medium {
-            color: var(--medium);
-        }
-
-        .v-low {
-            color: var(--low);
-        }
-
-        .status-card {
-            padding: 14px;
-            text-align: center;
-            color: var(--muted);
-            line-height: 1.5;
-        }
-
-        .loading-dots::after {
-            content: "";
-            display: inline-block;
-            width: 18px;
-            text-align: left;
-            animation: dots 1.2s infinite;
-        }
-
-        @keyframes dots {
-            0% { content: ""; }
-            33% { content: "."; }
-            66% { content: ".."; }
-            100% { content: "..."; }
-        }
-
-        .summary-card {
-            padding: 14px;
-        }
-
-        .summary-label {
-            margin: 0 0 8px;
-            color: var(--muted);
-            font-size: 11px;
-            text-transform: uppercase;
-            letter-spacing: 0.09em;
-        }
-
-        .summary-body {
-            margin: 0;
-            line-height: 1.55;
-            font-size: 13px;
-            white-space: pre-wrap;
-        }
-
-        .issues-wrap {
-            display: grid;
-            gap: 12px;
-        }
-
-        .file-group {
-            border-radius: 12px;
-            border: 1px solid var(--border);
             overflow: hidden;
-            background: var(--panel-soft);
+            box-shadow: 0 0 0 1px rgba(244, 78, 63, 0.08), 0 18px 40px rgba(0, 0, 0, 0.45);
         }
 
-        .file-header {
+        .topbar {
+            padding: 9px 12px;
+            border-bottom: 1px solid var(--line);
+            color: var(--muted);
+            background: linear-gradient(90deg, #120d0e, #1d0f10);
             display: flex;
             justify-content: space-between;
             align-items: center;
             gap: 8px;
-            padding: 10px 12px;
-            border-bottom: 1px solid var(--border);
-            background: color-mix(in srgb, var(--panel-soft) 82%, #0f151e 18%);
         }
 
-        .file-title {
+        .brand {
+            display: flex;
+            align-items: center;
+            gap: 8px;
+            color: #f3fff5;
+            font-weight: 700;
+            letter-spacing: 0.02em;
+        }
+
+        .live-dot {
+            width: 8px;
+            height: 8px;
+            border-radius: 999px;
+            background: var(--high);
+            box-shadow: 0 0 10px rgba(244, 0, 0, 0.8);
+        }
+
+        .meta-row {
+            display: flex;
+            align-items: center;
+            gap: 8px;
+            flex-wrap: wrap;
+        }
+
+        .chip {
+            border: 1px solid var(--line-2);
+            background: var(--panel-2);
+            color: var(--muted);
+            padding: 2px 8px;
+            border-radius: 999px;
+            font-size: 11px;
+        }
+
+        .chip.live {
+            color: #ffd0cb;
+            border-color: rgba(244, 78, 63, 0.55);
+            background: rgba(244, 78, 63, 0.08);
+        }
+
+        .layout {
+            display: grid;
+            grid-template-columns: 260px minmax(0, 1fr) 320px;
+            min-height: 620px;
+        }
+
+        .sidebar,
+        .content,
+        .fixpane {
+            border-right: 1px solid var(--line);
+            background: rgba(16, 10, 11, 0.78);
+        }
+
+        .fixpane { border-right: none; }
+
+        .section-head {
+            padding: 12px;
+            border-bottom: 1px solid var(--line);
+            background: rgba(22, 12, 13, 0.92);
+        }
+
+        .section-title {
             margin: 0;
             font-size: 12px;
-            color: var(--muted);
-            letter-spacing: 0.04em;
+            letter-spacing: 0.08em;
             text-transform: uppercase;
-            overflow: hidden;
-            text-overflow: ellipsis;
-            white-space: nowrap;
+            color: #f6d3cf;
         }
 
-        .file-count {
-            font-size: 11px;
-            color: var(--muted);
-            border: 1px solid var(--border);
-            border-radius: 999px;
-            padding: 2px 8px;
+        .section-subtitle {
+            margin: 6px 0 0;
+            color: var(--text);
+            font-size: 13px;
+            line-height: 1.4;
         }
 
-        .issues-list {
+        .section-body {
+            padding: 12px;
+        }
+
+        .prompt-line {
+            margin: 0 0 10px;
+            color: var(--accent);
+            text-shadow: 0 0 10px var(--glow);
+        }
+
+        .state-box {
+            border: 1px solid var(--line);
+            border-radius: 8px;
+            background: #110a0b;
             padding: 10px;
+            margin-bottom: 10px;
+        }
+
+        .state-title {
+            display: flex;
+            justify-content: space-between;
+            gap: 8px;
+            color: var(--muted);
+            margin: 0 0 6px;
+        }
+
+        .state-current {
+            margin: 0;
+            color: #ffe2de;
+        }
+
+        .state-log {
+            margin: 8px 0 0;
+            padding-left: 16px;
+            color: var(--muted);
+        }
+
+        .state-log li { margin-bottom: 2px; }
+
+        .status {
+            color: var(--muted);
+        }
+
+        .list {
+            padding: 12px;
             display: grid;
             gap: 10px;
         }
 
-        .issue-card {
-            border: 1px solid var(--border);
-            border-radius: 12px;
-            background: var(--panel);
-            padding: 11px;
-            animation: riseIn 220ms ease-out;
+        .group-head {
+            display: flex;
+            justify-content: space-between;
+            gap: 8px;
+            align-items: center;
+            margin-bottom: 8px;
+            color: var(--muted);
         }
 
-        @keyframes riseIn {
-            from { transform: translateY(5px); opacity: 0.45; }
-            to { transform: translateY(0); opacity: 1; }
+        .group-name {
+            text-transform: uppercase;
+            letter-spacing: 0.06em;
+            font-size: 11px;
+        }
+
+        .group-count {
+            font-size: 11px;
+        }
+
+        .issue-item {
+            border: 1px solid var(--line);
+            border-radius: 8px;
+            background: linear-gradient(180deg, rgba(31, 15, 16, 0.92), rgba(14, 8, 9, 0.96));
+            padding: 10px;
+            margin-bottom: 10px;
+            cursor: pointer;
+            transition: border-color 120ms ease, transform 120ms ease, box-shadow 120ms ease;
+        }
+
+        .issue-item:hover {
+            border-color: rgba(244, 78, 63, 0.55);
+            box-shadow: 0 0 0 1px rgba(244, 78, 63, 0.08);
+            transform: translateY(-1px);
+        }
+
+        .issue-item.active {
+            border-color: rgba(244, 0, 0, 0.75);
+            box-shadow: 0 0 0 1px rgba(244, 0, 0, 0.12);
         }
 
         .issue-top {
             display: flex;
-            align-items: flex-start;
             justify-content: space-between;
             gap: 8px;
-            margin-bottom: 8px;
+            align-items: flex-start;
+            margin-bottom: 6px;
         }
 
         .issue-title {
             margin: 0;
-            font-size: 14px;
-            line-height: 1.4;
+            font-size: 13px;
+            line-height: 1.35;
+            color: #fff6f5;
+        }
+
+        .issue-file,
+        .issue-line {
+            color: var(--muted);
+            font-size: 11px;
+            margin: 0;
+        }
+
+        .badge {
+            border-radius: 999px;
+            padding: 2px 8px;
+            border: 1px solid;
+            font-size: 11px;
+            white-space: nowrap;
+        }
+
+        .high { color: var(--high); border-color: rgba(244, 0, 0, 0.6); background: rgba(244, 0, 0, 0.1); }
+        .medium { color: var(--medium); border-color: rgba(244, 78, 63, 0.6); background: rgba(244, 78, 63, 0.1); }
+        .low { color: var(--low); border-color: rgba(244, 121, 107, 0.6); background: rgba(244, 121, 107, 0.1); }
+
+        .console-block {
+            border: 1px solid var(--line);
+            border-radius: 8px;
+            background: #0f090a;
+            padding: 10px;
+            margin-bottom: 10px;
+        }
+
+        .console-label {
+            margin: 0 0 6px;
+            color: var(--muted);
+            text-transform: uppercase;
+            letter-spacing: 0.07em;
+            font-size: 11px;
+        }
+
+        .console-text {
+            margin: 0;
+            white-space: pre-wrap;
+            color: #ffe7e5;
+        }
+
+        .fix-card {
+            border: 1px solid var(--line);
+            border-radius: 10px;
+            background: linear-gradient(180deg, rgba(29, 14, 15, 0.96), rgba(13, 8, 9, 0.98));
+            overflow: hidden;
+        }
+
+        .fix-card .section-head {
+            background: linear-gradient(180deg, rgba(46, 13, 15, 0.95), rgba(20, 10, 11, 0.92));
+        }
+
+        .fix-preview {
+            margin: 0;
+            padding: 10px;
+            background: #090809;
+            border: 1px solid var(--line);
+            border-radius: 8px;
+            color: #ffd3cf;
+            white-space: pre-wrap;
+            overflow-x: auto;
+            min-height: 120px;
+        }
+
+        .fix-actions {
+            display: flex;
+            gap: 8px;
+            flex-wrap: wrap;
+            margin-top: 10px;
+        }
+
+        .btn {
+            border: 1px solid #f40000;
+            background: linear-gradient(180deg, #f40000, #b80000);
+            color: #fff0ef;
+            padding: 7px 10px;
+            border-radius: 6px;
+            cursor: pointer;
+            font-family: inherit;
+            font-size: 12px;
+        }
+
+        .btn:hover { background: linear-gradient(180deg, #ff1e1e, #c50303); }
+
+        .btn.secondary {
+            border-color: var(--line-2);
+            background: #211112;
+            color: #ffd7d3;
+        }
+
+        .btn.secondary:hover { background: #311719; }
+
+        .timeline {
+            margin: 0;
+            padding: 0;
+            list-style: none;
+            display: grid;
+            gap: 4px;
+        }
+
+        .timeline li {
+            display: flex;
+            gap: 8px;
+            align-items: flex-start;
+            color: var(--muted);
+        }
+
+        .timeline .t-stage {
+            min-width: 74px;
+            color: #ffd7d3;
+        }
+
+        .timeline .t-stage.failed { color: var(--high); }
+        .timeline .t-stage.success { color: var(--low); }
+        .timeline .t-stage.active { color: var(--medium); }
+
+        .status-wrap {
+            display: flex;
+            justify-content: space-between;
+            gap: 8px;
+            align-items: center;
+            font-size: 11px;
+            color: var(--muted);
+        }
+
+        .status-dot {
+            width: 8px;
+            height: 8px;
+            border-radius: 999px;
+            background: var(--high);
+            box-shadow: 0 0 10px rgba(244, 0, 0, 0.85);
+            display: inline-block;
+            margin-right: 6px;
+        }
+
+        .workspace-title {
+            color: #f3fff5;
             font-weight: 700;
         }
 
-        .severity-badge {
-            font-size: 10px;
-            font-weight: 800;
-            border-radius: 999px;
-            padding: 4px 8px;
-            text-transform: uppercase;
-            letter-spacing: 0.07em;
-            border: 1px solid transparent;
-            flex-shrink: 0;
+        @media (max-width: 1200px) {
+            .layout { grid-template-columns: 240px minmax(0, 1fr); }
+            .fixpane { grid-column: 1 / -1; border-top: 1px solid var(--line); }
         }
 
-        .severity-high {
-            color: var(--high);
-            border-color: color-mix(in srgb, var(--high) 60%, transparent 40%);
-            background: color-mix(in srgb, var(--high) 16%, transparent 84%);
+        @media (max-width: 850px) {
+            .layout { grid-template-columns: 1fr; }
+            .sidebar, .content, .fixpane { border-right: none; border-bottom: 1px solid var(--line); }
         }
 
-        .severity-medium {
-            color: var(--medium);
-            border-color: color-mix(in srgb, var(--medium) 60%, transparent 40%);
-            background: color-mix(in srgb, var(--medium) 16%, transparent 84%);
+        .loading-banner,
+        .error-banner,
+        .empty-banner {
+            border: 1px dashed var(--line-2);
+            border-radius: 8px;
+            padding: 10px;
+            color: var(--muted);
+            background: rgba(14, 8, 9, 0.72);
         }
 
-        .severity-low {
-            color: var(--low);
-            border-color: color-mix(in srgb, var(--low) 60%, transparent 40%);
-            background: color-mix(in srgb, var(--low) 16%, transparent 84%);
+        .error-banner { color: var(--high); }
+
+        .summary-card {
+            display: grid;
+            gap: 8px;
         }
 
-        .meta-line {
+        .summary-grid {
+            display: grid;
+            grid-template-columns: repeat(3, minmax(0, 1fr));
+            gap: 8px;
+        }
+
+        .summary-chip {
+            border: 1px solid var(--line);
+            border-radius: 8px;
+            background: var(--panel);
+            padding: 8px;
+        }
+
+        .summary-chip .k {
             color: var(--muted);
             font-size: 11px;
-            margin-bottom: 8px;
+            margin-bottom: 4px;
         }
 
-        .block-label {
-            margin: 10px 0 4px;
-            color: var(--muted);
-            font-size: 11px;
-            text-transform: uppercase;
-            letter-spacing: 0.08em;
-        }
-
-        .block-body {
-            margin: 0;
-            line-height: 1.5;
-            font-size: 12px;
-            white-space: pre-wrap;
-        }
-
-        .fix-snippet {
-            margin: 0;
-            margin-top: 4px;
-            padding: 9px;
-            border-radius: 8px;
-            border: 1px solid var(--border);
-            background: color-mix(in srgb, var(--panel) 78%, #0b1016 22%);
-            font-family: var(--vscode-editor-font-family);
-            font-size: 11px;
-            line-height: 1.45;
-            white-space: pre-wrap;
-            overflow-x: auto;
-        }
-
-        .apply-btn {
-            margin-top: 10px;
-            border: 1px solid color-mix(in srgb, var(--brand) 60%, transparent 40%);
-            border-radius: 8px;
-            padding: 7px 11px;
-            cursor: pointer;
-            color: #d8f3ff;
-            background: linear-gradient(180deg, color-mix(in srgb, var(--brand) 36%, #122331 64%), color-mix(in srgb, var(--brand) 28%, #081017 72%));
-            transition: transform 90ms ease, filter 130ms ease;
-            font-size: 12px;
-            font-weight: 600;
-        }
-
-        .apply-btn:hover {
-            filter: brightness(1.08);
-        }
-
-        .apply-btn:active {
-            transform: translateY(1px);
-        }
-
-        @media (max-width: 680px) {
-            .stats {
-                grid-template-columns: repeat(2, minmax(0, 1fr));
-            }
-
-            .hero-top {
-                flex-direction: column;
-                align-items: flex-start;
-            }
+        .summary-chip .v {
+            color: #fff6f5;
+            font-size: 14px;
+            font-weight: 700;
         }
     </style>
 </head>
 <body>
-    <section class="card hero">
-        <div class="hero-top">
-            <div>
-                <h1 class="title">AI Security Review Agent</h1>
-                <p class="subtitle">AI-assisted vulnerability triage with instant editor fixes.</p>
+    <section class="terminal-shell">
+        <div class="topbar">
+            <div class="brand">
+                <span class="status-dot"></span>
+                <span>AI Security Review Agent</span>
             </div>
-            <div id="scopePill" class="scope-pill">Awaiting Scan</div>
+            <div class="meta-row">
+                <span class="chip live">LIVE</span>
+                <span class="chip" id="stageBadge">idle</span>
+                <span class="chip" id="meta">mode=idle issues=0</span>
+            </div>
         </div>
-        <div id="stats" class="stats">
-            <div class="stat"><div class="k">Total Issues</div><div class="v" id="statTotal">0</div></div>
-            <div class="stat"><div class="k">High</div><div class="v v-high" id="statHigh">0</div></div>
-            <div class="stat"><div class="k">Medium</div><div class="v v-medium" id="statMedium">0</div></div>
-            <div class="stat"><div class="k">Low</div><div class="v v-low" id="statLow">0</div></div>
+
+        <div class="layout">
+            <aside class="sidebar">
+                <div class="section-head">
+                    <p class="section-title">issues</p>
+                    <p class="section-subtitle">Choose a finding to inspect or fix.</p>
+                </div>
+                <div class="section-body">
+                    <div id="issueIndex" class="list"></div>
+                </div>
+            </aside>
+
+            <main class="content">
+                <div class="section-head">
+                    <p class="section-title">review console</p>
+                    <p id="selectedTitle" class="section-subtitle">No issue selected</p>
+                </div>
+                <div class="section-body">
+                    <div class="prompt-line">$ scan --mode auto --target current</div>
+                    <section class="state-box">
+                        <p class="state-title">
+                            <span>state</span>
+                            <span id="stateClock">--:--:--</span>
+                        </p>
+                        <p id="stateCurrent" class="state-current">idle: waiting for command</p>
+                        <ol id="stateLog" class="state-log"></ol>
+                    </section>
+
+                    <section id="loading" class="loading-banner">Scanning...</section>
+                    <section id="error" class="error-banner hidden"></section>
+                    <section id="summary" class="summary-card hidden"></section>
+                    <section id="issues" class="hidden"></section>
+                </div>
+            </main>
+
+            <aside class="fixpane">
+                <div class="section-head">
+                    <p class="section-title">ai fix</p>
+                    <p id="fixSubtitle" class="section-subtitle">Select a finding to preview the fix.</p>
+                </div>
+                <div class="section-body">
+                    <div class="fix-card">
+                        <div class="section-head">
+                            <p class="section-title">selected issue</p>
+                            <p id="fixTitle" class="workspace-title">None</p>
+                        </div>
+                        <div class="section-body">
+                            <p id="fixMeta" class="issue-file">No finding selected</p>
+                            <div class="summary-grid">
+                                <div class="summary-chip"><div class="k">severity</div><div id="fixSeverity" class="v">-</div></div>
+                                <div class="summary-chip"><div class="k">file</div><div id="fixFile" class="v">-</div></div>
+                                <div class="summary-chip"><div class="k">line</div><div id="fixLine" class="v">-</div></div>
+                            </div>
+
+                            <p class="label">explanation</p>
+                            <p id="fixExplanation" class="text">Select a finding from the issue rail.</p>
+
+                            <p class="label">fix preview</p>
+                            <pre id="fixPreview" class="fix-preview">No fix selected.</pre>
+
+                            <div class="fix-actions">
+                                <button id="applyBtn" class="btn">apply_fix</button>
+                                <button id="skipBtn" class="btn secondary">skip</button>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            </aside>
         </div>
     </section>
-
-    <section id="loading" class="card status-card loading-dots">Scanning</section>
-    <section id="error" class="card status-card hidden"></section>
-    <section id="summary" class="card summary-card hidden"></section>
-    <section id="issues" class="issues-wrap hidden"></section>
 
     <script>
         const vscodeApi = acquireVsCodeApi();
@@ -1432,17 +1627,31 @@ function getWebviewHtml() {
             summary: "",
             score: null,
             issues: [],
+            stageHistory: [],
+            selectedIssueId: null,
         };
 
+        const metaEl = document.getElementById("meta");
+        const stageBadgeEl = document.getElementById("stageBadge");
+        const stateClockEl = document.getElementById("stateClock");
+        const issueIndexEl = document.getElementById("issueIndex");
+        const selectedTitleEl = document.getElementById("selectedTitle");
         const loadingEl = document.getElementById("loading");
         const errorEl = document.getElementById("error");
         const summaryEl = document.getElementById("summary");
         const issuesEl = document.getElementById("issues");
-        const scopePillEl = document.getElementById("scopePill");
-        const statTotalEl = document.getElementById("statTotal");
-        const statHighEl = document.getElementById("statHigh");
-        const statMediumEl = document.getElementById("statMedium");
-        const statLowEl = document.getElementById("statLow");
+        const stateCurrentEl = document.getElementById("stateCurrent");
+        const stateLogEl = document.getElementById("stateLog");
+        const fixSubtitleEl = document.getElementById("fixSubtitle");
+        const fixTitleEl = document.getElementById("fixTitle");
+        const fixMetaEl = document.getElementById("fixMeta");
+        const fixSeverityEl = document.getElementById("fixSeverity");
+        const fixFileEl = document.getElementById("fixFile");
+        const fixLineEl = document.getElementById("fixLine");
+        const fixExplanationEl = document.getElementById("fixExplanation");
+        const fixPreviewEl = document.getElementById("fixPreview");
+        const applyBtnEl = document.getElementById("applyBtn");
+        const skipBtnEl = document.getElementById("skipBtn");
 
         function escapeHtml(text) {
             return String(text)
@@ -1453,88 +1662,169 @@ function getWebviewHtml() {
                 .replaceAll("'", "&#39;");
         }
 
-        function severityClass(severity) {
-            if (severity === "High") return "severity-high";
-            if (severity === "Medium") return "severity-medium";
-            return "severity-low";
+        function badgeClass(severity) {
+            if (severity === "High") return "badge high";
+            if (severity === "Medium") return "badge medium";
+            return "badge low";
         }
 
-        function computeCounts() {
-            const counts = { total: state.issues.length, high: 0, medium: 0, low: 0 };
+        function getSelectedIssue() {
+            if (!state.issues.length) {
+                return null;
+            }
 
+            return state.issues.find((issue) => issue.id === state.selectedIssueId) || state.issues[0];
+        }
+
+        function setSelectedIssue(issueId) {
+            state.selectedIssueId = issueId;
+            render();
+        }
+
+        function renderMeta() {
+            const count = state.issues.length;
+            const mode = state.scope ? state.scope.toLowerCase() : "idle";
+            const scoreText = typeof state.score === "number" ? " score=" + state.score : "";
+            metaEl.textContent = "mode=" + mode + " issues=" + count + scoreText;
+        }
+
+        function formatClock(iso) {
+            const date = new Date(iso || Date.now());
+            const hh = String(date.getHours()).padStart(2, "0");
+            const mm = String(date.getMinutes()).padStart(2, "0");
+            const ss = String(date.getSeconds()).padStart(2, "0");
+            return hh + ":" + mm + ":" + ss;
+        }
+
+        function renderState() {
+            const latest = state.stageHistory[0];
+            const stage = latest?.stage || "idle";
+            const detail = latest?.detail || "waiting for command";
+
+            stageBadgeEl.textContent = stage;
+            stateClockEl.textContent = formatClock(latest?.timestamp);
+            stateCurrentEl.textContent = stage + ": " + detail;
+
+            stateLogEl.innerHTML = "";
+            for (const item of state.stageHistory.slice(0, 6)) {
+                const li = document.createElement("li");
+                const stageClass = item.stage.includes("fail") ? "t-stage failed" : item.loading ? "t-stage active" : "t-stage success";
+                li.innerHTML = '<span class="' + stageClass + '">[' + formatClock(item.timestamp) + '] ' + escapeHtml(item.stage) + '</span><span>' + escapeHtml(item.detail) + '</span>';
+                stateLogEl.appendChild(li);
+            }
+        }
+
+        function renderIssueIndex() {
+            issueIndexEl.innerHTML = "";
+
+            if (!state.issues.length) {
+                const empty = document.createElement("div");
+                empty.className = "empty-banner";
+                empty.textContent = "No issues in the latest scan.";
+                issueIndexEl.appendChild(empty);
+                return;
+            }
+
+            const grouped = new Map();
             for (const issue of state.issues) {
-                if (issue.severity === "High") {
-                    counts.high += 1;
-                } else if (issue.severity === "Medium") {
-                    counts.medium += 1;
-                } else {
-                    counts.low += 1;
+                const severity = issue.severity || "Low";
+                if (!grouped.has(severity)) {
+                    grouped.set(severity, []);
                 }
+                grouped.get(severity).push(issue);
             }
 
-            return counts;
+            for (const severity of ["High", "Medium", "Low"]) {
+                const list = grouped.get(severity);
+                if (!list || !list.length) {
+                    continue;
+                }
+
+                const section = document.createElement("div");
+                const header = document.createElement("div");
+                header.className = "group-head";
+                header.innerHTML = '<span class="group-name">' + severity + '</span><span class="group-count">' + list.length + '</span>';
+                section.appendChild(header);
+
+                for (const issue of list) {
+                    const item = document.createElement("div");
+                    item.className = "issue-item" + (issue.id === state.selectedIssueId || (!state.selectedIssueId && issue === state.issues[0]) ? " active" : "");
+                    item.addEventListener("click", () => setSelectedIssue(issue.id));
+
+                    item.innerHTML =
+                        '<div class="issue-top">' +
+                            '<div>' +
+                                '<p class="issue-title">' + escapeHtml(issue.title || "Untitled issue") + '</p>' +
+                                '<p class="issue-file">' + escapeHtml(issue.file || "Unknown file") + '</p>' +
+                            '</div>' +
+                            '<span class="' + badgeClass(issue.severity) + '">' + escapeHtml(issue.severity || "Low") + '</span>' +
+                        '</div>' +
+                        '<p class="issue-line">' + escapeHtml(issue.line ? "Line " + issue.line : "Line n/a") + '</p>';
+
+                    section.appendChild(item);
+                }
+
+                issueIndexEl.appendChild(section);
+            }
         }
 
-        function renderHeaderStats() {
-            const counts = computeCounts();
-            statTotalEl.textContent = String(counts.total);
-            statHighEl.textContent = String(counts.high);
-            statMediumEl.textContent = String(counts.medium);
-            statLowEl.textContent = String(counts.low);
+        function renderSelectedIssue() {
+            const issue = getSelectedIssue();
 
-            if (state.scope) {
-                scopePillEl.textContent = state.scope + " Scan";
+            if (!issue) {
+                selectedTitleEl.textContent = "No issue selected";
+                fixSubtitleEl.textContent = "Select a finding to preview the fix.";
+                fixTitleEl.textContent = "None";
+                fixMetaEl.textContent = "No finding selected";
+                fixSeverityEl.textContent = "-";
+                fixFileEl.textContent = "-";
+                fixLineEl.textContent = "-";
+                fixExplanationEl.textContent = "Select a finding from the issue rail.";
+                fixPreviewEl.textContent = "No fix selected.";
+                return;
             }
+
+            selectedTitleEl.textContent = issue.title || "Untitled issue";
+            fixSubtitleEl.textContent = issue.file || "Unknown file";
+            fixTitleEl.textContent = issue.title || "Untitled issue";
+            fixMetaEl.textContent = issue.severity || "Low";
+            fixSeverityEl.textContent = issue.severity || "Low";
+            fixSeverityEl.className = issue.severity === "High" ? "v high" : issue.severity === "Medium" ? "v medium" : "v low";
+            fixFileEl.textContent = issue.file || "Unknown file";
+            fixLineEl.textContent = issue.line ? String(issue.line) : "n/a";
+            fixExplanationEl.textContent = issue.explanation || "No explanation provided.";
+            fixPreviewEl.textContent = issue.fix || "No fix provided.";
         }
 
         function renderSummary() {
             summaryEl.innerHTML = "";
+            const summaryBox = document.createElement("div");
+            summaryBox.className = "console-block";
+            summaryBox.innerHTML =
+                '<p class="console-label">summary</p>' +
+                '<p class="console-text">' + escapeHtml(state.summary || "No summary available.") + '</p>';
 
-            const label = document.createElement("p");
-            label.className = "summary-label";
-            label.textContent = "Summary";
+            const stats = document.createElement("div");
+            stats.className = "summary-grid";
 
-            const body = document.createElement("p");
-            body.className = "summary-body";
-            body.textContent = state.summary || "No summary available.";
+            const total = document.createElement("div");
+            total.className = "summary-chip";
+            total.innerHTML = '<div class="k">issues</div><div class="v">' + state.issues.length + '</div>';
 
-            const score = document.createElement("p");
-            score.className = "summary-label";
-            score.style.marginTop = "10px";
-            score.textContent =
-                typeof state.score === "number" ? "Risk Score: " + state.score : "Risk Score: N/A";
+            const score = document.createElement("div");
+            score.className = "summary-chip";
+            score.innerHTML = '<div class="k">score</div><div class="v">' + (typeof state.score === "number" ? state.score : "n/a") + '</div>';
 
-            summaryEl.appendChild(label);
-            summaryEl.appendChild(body);
-            summaryEl.appendChild(score);
-        }
+            const scope = document.createElement("div");
+            scope.className = "summary-chip";
+            scope.innerHTML = '<div class="k">scope</div><div class="v">' + escapeHtml(state.scope || "idle") + '</div>';
 
-        function createIssueCard(issue) {
-            const card = document.createElement("article");
-            card.className = "issue-card";
+            stats.appendChild(total);
+            stats.appendChild(score);
+            stats.appendChild(scope);
 
-            const lineText = issue.line ? "Line: " + issue.line : "Line: not provided";
-
-            card.innerHTML =
-                '<div class="issue-top">' +
-                    '<h3 class="issue-title">' + escapeHtml(issue.title || "Untitled issue") + '</h3>' +
-                    '<span class="severity-badge ' + severityClass(issue.severity) + '">' + escapeHtml(issue.severity || "Low") + '</span>' +
-                '</div>' +
-                '<div class="meta-line">' + escapeHtml(lineText) + '</div>' +
-                '<p class="block-label">Explanation</p>' +
-                '<p class="block-body">' + escapeHtml(issue.explanation || "No explanation provided.") + '</p>' +
-                '<p class="block-label">Suggested Fix</p>' +
-                '<pre class="fix-snippet">' + escapeHtml(issue.fix || "No fix provided.") + '</pre>';
-
-            const applyButton = document.createElement("button");
-            applyButton.className = "apply-btn";
-            applyButton.textContent = "Apply Fix";
-            applyButton.addEventListener("click", () => {
-                vscodeApi.postMessage({ command: "applyFix", issueId: issue.id });
-            });
-
-            card.appendChild(applyButton);
-            return card;
+            summaryEl.appendChild(summaryBox);
+            summaryEl.appendChild(stats);
         }
 
         function renderIssues() {
@@ -1542,46 +1832,18 @@ function getWebviewHtml() {
 
             if (!state.issues.length) {
                 const empty = document.createElement("section");
-                empty.className = "card status-card";
-                empty.textContent = "No vulnerabilities found in the latest scan.";
+                empty.className = "empty-banner";
+                empty.textContent = "No vulnerabilities found.";
                 issuesEl.appendChild(empty);
                 return;
-            }
-
-            const grouped = new Map();
-            for (const issue of state.issues) {
-                const file = issue.file || "Unknown file";
-                if (!grouped.has(file)) {
-                    grouped.set(file, []);
-                }
-                grouped.get(file).push(issue);
-            }
-
-            for (const [file, fileIssues] of grouped.entries()) {
-                const group = document.createElement("section");
-                group.className = "file-group";
-
-                const header = document.createElement("div");
-                header.className = "file-header";
-                header.innerHTML =
-                    '<p class="file-title">' + escapeHtml(file) + '</p>' +
-                    '<span class="file-count">' + fileIssues.length + ' issue(s)</span>';
-
-                const list = document.createElement("div");
-                list.className = "issues-list";
-
-                for (const issue of fileIssues) {
-                    list.appendChild(createIssueCard(issue));
-                }
-
-                group.appendChild(header);
-                group.appendChild(list);
-                issuesEl.appendChild(group);
             }
         }
 
         function render() {
-            renderHeaderStats();
+            renderMeta();
+            renderState();
+            renderIssueIndex();
+            renderSelectedIssue();
 
             loadingEl.classList.toggle("hidden", !state.loading);
             errorEl.classList.toggle("hidden", !state.error);
@@ -1594,7 +1856,7 @@ function getWebviewHtml() {
             }
 
             if (state.loading) {
-                loadingEl.textContent = "Scanning";
+                loadingEl.textContent = "Scanning...";
                 return;
             }
 
@@ -1605,10 +1867,24 @@ function getWebviewHtml() {
         window.addEventListener("message", (event) => {
             const message = event.data || {};
 
+            if (message.type === "state") {
+                const entry = {
+                    stage: String(message.stage || "working"),
+                    detail: String(message.detail || "in progress"),
+                    loading: Boolean(message.loading),
+                    timestamp: message.timestamp || new Date().toISOString(),
+                };
+
+                state.stageHistory = [entry, ...(state.stageHistory || [])].slice(0, 20);
+                state.loading = entry.loading;
+                render();
+                return;
+            }
+
             if (message.type === "loading") {
                 state.loading = true;
                 state.error = "";
-                loadingEl.textContent = message.message || "Scanning";
+                loadingEl.textContent = message.message || "Scanning...";
                 render();
                 return;
             }
@@ -1627,8 +1903,27 @@ function getWebviewHtml() {
                 state.summary = message.payload?.summary || "";
                 state.score = message.payload?.score ?? null;
                 state.issues = Array.isArray(message.payload?.issues) ? message.payload.issues : [];
+                state.selectedIssueId = state.issues[0]?.id || null;
                 render();
             }
+        });
+
+        applyBtnEl.addEventListener("click", () => {
+            const issue = getSelectedIssue();
+            if (issue) {
+                vscodeApi.postMessage({ command: "applyFix", issueId: issue.id });
+            }
+        });
+
+        skipBtnEl.addEventListener("click", () => {
+            if (!state.issues.length) {
+                return;
+            }
+
+            const currentIndex = Math.max(0, state.issues.findIndex((issue) => issue.id === state.selectedIssueId));
+            const next = state.issues[(currentIndex + 1) % state.issues.length];
+            state.selectedIssueId = next.id;
+            render();
         });
 
         render();
