@@ -24,7 +24,24 @@ const normalizeRelativePath = (value) =>
   toPosixPath(value)
     .trim()
     .replace(/^\/+/, "")
-    .replace(/^\.\//, "");
+    .replace(/^(\.\/)+/, "");
+
+const isSafeRelativePath = (relativePath) => {
+  if (!relativePath || relativePath.includes("\u0000")) {
+    return false;
+  }
+
+  if (relativePath.startsWith("/") || /^[a-zA-Z]:\//.test(relativePath)) {
+    return false;
+  }
+
+  const segments = relativePath.split("/").filter(Boolean);
+  if (!segments.length) {
+    return false;
+  }
+
+  return segments.every((segment) => segment !== "." && segment !== "..");
+};
 
 const isInsideRoot = (rootDir, targetPath) => {
   const relative = path.relative(rootDir, targetPath);
@@ -45,7 +62,7 @@ const getProjectRoot = () => {
 const resolveTargetFilePath = async (relativeFilePath, rootDir) => {
   const safeRelativePath = normalizeRelativePath(relativeFilePath);
 
-  if (!safeRelativePath) {
+  if (!isSafeRelativePath(safeRelativePath)) {
     return null;
   }
 
@@ -57,6 +74,12 @@ const resolveTargetFilePath = async (relativeFilePath, rootDir) => {
   const files = await walkFiles(rootDir, { maxFiles: 4000 });
   const wanted = safeRelativePath.toLowerCase();
   const wantedParts = wanted.split("/").filter(Boolean);
+
+  // Fuzzy fallback is only allowed for a bare filename to avoid ambiguous nested-path targeting.
+  if (wantedParts.length > 1) {
+    return null;
+  }
+
   const wantedBaseName = wantedParts[wantedParts.length - 1] || "";
 
   let bestMatch = null;
@@ -278,7 +301,175 @@ const applyOpenNetworkFix = (content) => {
   };
 };
 
-const applyFixHeuristic = ({ content, vulnerability, extension }) => {
+const PY_PINNED_VERSIONS = {
+  flask: "2.3.3",
+  django: "4.2.16",
+  requests: "2.32.3",
+  fastapi: "0.115.0",
+  pyyaml: "6.0.2",
+  cryptography: "43.0.1",
+};
+
+const pinPythonDependencyLine = (line) => {
+  const trimmed = String(line || "").trim();
+
+  if (!trimmed || trimmed.startsWith("#") || trimmed.startsWith("-r ")) {
+    return line;
+  }
+
+  if (/(==|>=|<=|~=|!=|>|<)/.test(trimmed)) {
+    return line;
+  }
+
+  const match = trimmed.match(/^([a-zA-Z0-9_.-]+)/);
+  if (!match) {
+    return line;
+  }
+
+  const packageName = match[1];
+  const version = PY_PINNED_VERSIONS[packageName.toLowerCase()] || "1.0.0";
+  return `${packageName}==${version}`;
+};
+
+const applyInsecureDependenciesFix = (content, extension, targetPath) => {
+  const fileName = path.basename(String(targetPath || "")).toLowerCase();
+
+  if (fileName === "requirements.txt" || extension === ".txt") {
+    const lines = String(content || "").split(/\r?\n/);
+    let changed = false;
+
+    const updatedLines = lines.map((line) => {
+      const updatedLine = pinPythonDependencyLine(line);
+      if (updatedLine !== line) {
+        changed = true;
+      }
+
+      return updatedLine;
+    });
+
+    return {
+      changed,
+      updated: updatedLines.join("\n"),
+      strategy: changed ? "pin-python-dependencies" : null,
+    };
+  }
+
+  if (fileName === "package.json") {
+    try {
+      const parsed = JSON.parse(content);
+      let changed = false;
+
+      for (const section of ["dependencies", "devDependencies"]) {
+        const deps = parsed?.[section];
+        if (!deps || typeof deps !== "object") {
+          continue;
+        }
+
+        for (const [name, version] of Object.entries(deps)) {
+          const original = String(version || "");
+          const pinned = original.replace(/^[\^~]/, "");
+          if (pinned !== original) {
+            deps[name] = pinned;
+            changed = true;
+          }
+        }
+      }
+
+      return {
+        changed,
+        updated: changed ? `${JSON.stringify(parsed, null, 2)}\n` : content,
+        strategy: changed ? "pin-node-dependencies" : null,
+      };
+    } catch {
+      return {
+        changed: false,
+        updated: content,
+        strategy: null,
+      };
+    }
+  }
+
+  return {
+    changed: false,
+    updated: content,
+    strategy: null,
+  };
+};
+
+const applyInsecureNetworkUsageFix = (content) => {
+  const regex = /http:\/\//g;
+  let changed = false;
+
+  const updated = String(content || "").replace(regex, () => {
+    changed = true;
+    return "https://";
+  });
+
+  return {
+    changed,
+    updated,
+    strategy: changed ? "enforce-https" : null,
+  };
+};
+
+const applyPathTraversalFix = (content, extension) => {
+  let changed = false;
+  let updated = String(content || "");
+
+  if (extension === ".py") {
+    const replacedDotDot = updated.replace(/\.\.\//g, () => {
+      changed = true;
+      return "";
+    });
+
+    updated = replacedDotDot.replace(
+      /(open\s*\(\s*["'][^"']*[\\/]?["']\s*\+\s*)([a-zA-Z_][a-zA-Z0-9_]*)/g,
+      (full, prefix, variableName) => {
+        changed = true;
+        return `${prefix}os.path.basename(${variableName})`;
+      }
+    );
+
+    return {
+      changed,
+      updated,
+      strategy: changed ? "sanitize-path-input" : null,
+    };
+  }
+
+  const replacedDotDot = updated.replace(/\.\.\//g, () => {
+    changed = true;
+    return "";
+  });
+
+  updated = replacedDotDot.replace(
+    /((?:open|fs\.(?:readFile|readFileSync|createReadStream|writeFile|writeFileSync|createWriteStream))\s*\(\s*["'][^"']*[\\/]?["']\s*\+\s*)([a-zA-Z_$][a-zA-Z0-9_$]*)/g,
+    (full, prefix, variableName) => {
+      changed = true;
+      return `${prefix}path.basename(${variableName})`;
+    }
+  );
+
+  return {
+    changed,
+    updated,
+    strategy: changed ? "sanitize-path-input" : null,
+  };
+};
+
+const applyInsecureFileHandlingFix = (content, extension) => {
+  const traversalResult = applyPathTraversalFix(content, extension);
+  if (traversalResult.changed) {
+    return {
+      ...traversalResult,
+      strategy: "secure-file-path-handling",
+    };
+  }
+
+  return traversalResult;
+};
+
+const applyFixHeuristic = ({ content, vulnerability, extension, targetPath }) => {
   const title = String(vulnerability || "").toLowerCase();
 
   if (/hardcoded\s+secret|possible\s+hardcoded\s+secret|access\s+key|private\s+key|token|password/.test(title)) {
@@ -297,6 +488,22 @@ const applyFixHeuristic = ({ content, vulnerability, extension }) => {
     return applyOpenNetworkFix(content);
   }
 
+  if (/insecure\s+dependenc/.test(title)) {
+    return applyInsecureDependenciesFix(content, extension, targetPath);
+  }
+
+  if (/insecure\s+network\s+usage/.test(title)) {
+    return applyInsecureNetworkUsageFix(content);
+  }
+
+  if (/path\s+traversal/.test(title)) {
+    return applyPathTraversalFix(content, extension);
+  }
+
+  if (/insecure\s+file\s+handling/.test(title)) {
+    return applyInsecureFileHandlingFix(content, extension);
+  }
+
   return {
     changed: false,
     updated: content,
@@ -308,12 +515,13 @@ export const applyFixToCodebase = async ({
   relativeFilePath,
   vulnerability,
   selectedFix,
+  projectRoot,
 } = {}) => {
-  const rootDir = getProjectRoot();
+  const rootDir = projectRoot ? path.resolve(projectRoot) : getProjectRoot();
   const safeRelativeFilePath = normalizeRelativePath(relativeFilePath);
 
-  if (!safeRelativeFilePath) {
-    throw new Error("file is required");
+  if (!isSafeRelativePath(safeRelativeFilePath)) {
+    throw new Error("Invalid file path");
   }
 
   if (!String(vulnerability || "").trim()) {
@@ -345,6 +553,7 @@ export const applyFixToCodebase = async ({
     content: original,
     vulnerability,
     extension,
+    targetPath,
   });
 
   if (!patchResult.changed || patchResult.updated === original) {
