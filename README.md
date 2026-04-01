@@ -1,6 +1,6 @@
 <div align="center">
 
-<img src="https://via.placeholder.com/1280x400/090809/F40000?text=SecSphere+Security+Platform" alt="SecSphere Banner" width="100%"/>
+<img src="./docs/assets/secsphere-banner.png" alt="SecSphere Banner" width="100%"/>
 
 # 🛡️ SecSphere
 
