@@ -4,6 +4,7 @@
   "description": "AI-powered security scanner backend",
   "main": "server.js",
   "scripts": {
+    "build": "echo \"Backend has no compile step\"",
     "start": "node server.js",
     "dev": "node server.js",
     "test-ai": "node testAI.js"
