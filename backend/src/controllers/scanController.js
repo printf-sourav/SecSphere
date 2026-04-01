@@ -2,7 +2,14 @@ import ApiResponse from "../utils/ApiResponse.js";
 import ApiError from "../utils/ApiError.js";
 import fs from "fs-extra";
 import path from "path";
-import { extractZip } from "../integrations/zipHandler.js";
+import {
+  createZipScanReportFile,
+  createZipScanReportPdf,
+  compressDirectory,
+  extractZip,
+  getZipProcessingRecord,
+  recordZipProcessingLocation,
+} from "../integrations/zipHandler.js";
 import { cloneRepo } from "../integrations/repoScanner.js";
 import {
   runSemgrepScan,
@@ -14,6 +21,10 @@ import { scanConfig } from "../services/configScanner.js";
 import { scanIAM } from "../services/iamScanner.js";
 import { scanGitignore } from "../services/gitignoreScanner.js";
 import { scanSecurityMisconfig } from "../services/securityMisconfigScanner.js";
+import {
+  buildVulnerabilityReport,
+  scanVulnerabilityCatalog,
+} from "../services/vulnerabilityCatalogScanner.js";
 import {
   explainIssue,
   generateSummary,
@@ -101,6 +112,7 @@ const runAllScanners = (text, filePath = "") => {
     ...scanConfig(text),
     ...scanIAM(text),
     ...scanSecurityMisconfig(text),
+    ...scanVulnerabilityCatalog(text, filePath),
   ];
 
   if (path.basename(filePath).toLowerCase() === ".gitignore") {
@@ -108,6 +120,46 @@ const runAllScanners = (text, filePath = "") => {
   }
 
   return issues;
+};
+
+const collectIssuesForFolder = async (folderPath) => {
+  const issues = [];
+  const files = await walkFiles(folderPath, { maxFiles: MAX_FILES_TO_SCAN });
+
+  for (const filePath of files) {
+    if (!isScannableFile(filePath)) {
+      continue;
+    }
+
+    const text = await readTextSafely(filePath);
+    if (!text) {
+      continue;
+    }
+
+    const fileIssues = runAllScanners(text, filePath).map((issue) =>
+      toIssueWithContext(issue, filePath, folderPath)
+    );
+
+    issues.push(...fileIssues);
+  }
+
+  const semgrepResult = await runSemgrepScan(folderPath, {
+    basePath: folderPath,
+  });
+
+  if (semgrepResult.status === "ok") {
+    issues.push(...semgrepResult.issues);
+  }
+
+  const trivyResult = await runTrivyDependencyScan(folderPath, {
+    basePath: folderPath,
+  });
+
+  if (trivyResult.status === "ok") {
+    issues.push(...trivyResult.issues);
+  }
+
+  return sortIssuesBySeverity(issues);
 };
 
 const isZipUpload = (file) => {
@@ -132,6 +184,7 @@ export const handleScan = async (req, res) => {
   let fileLimitReached = false;
   let repoUrl = "";
   let scannedFilePaths = [];
+  let zipScanSessionId = null;
 
   try {
     console.log("[scan] request received");
@@ -153,7 +206,11 @@ export const handleScan = async (req, res) => {
         throw new ApiError(400, "Invalid ZIP file");
       }
 
-      tempPaths.push(folderPath);
+      const zipRecord = await recordZipProcessingLocation({
+        uploadedZipPath: req.file.path,
+        extractedPath: folderPath,
+      });
+      zipScanSessionId = zipRecord.id;
     }
 
     repoUrl = req.body?.repoUrl?.trim() || "";
@@ -352,6 +409,7 @@ export const handleScan = async (req, res) => {
 
     const score = calculateScore(limitedIssues);
     const riskPrediction = predictRiskScore(limitedIssues, projectContext);
+    const vulnerabilityReport = buildVulnerabilityReport(allIssues);
 
     return res.json(
       new ApiResponse(
@@ -365,6 +423,8 @@ export const handleScan = async (req, res) => {
           riskModel: riskPrediction.model,
           projectContext,
           bestPractices,
+          vulnerabilityReport,
+          scanSessionId: zipScanSessionId,
         },
         "Scan completed"
       )
@@ -419,16 +479,29 @@ export const handleApplyFixToCodebase = async (req, res) => {
   const vulnerability = req.body?.vulnerability || req.body?.title;
   const fix = req.body?.fix;
   const file = req.body?.file || req.body?.relativeFilePath;
+  const scanSessionId = String(req.body?.scanSessionId || "").trim();
 
   if (!vulnerability || !fix || !file) {
     throw new ApiError(400, "vulnerability, fix and file are required");
   }
 
   try {
+    let projectRoot;
+
+    if (scanSessionId) {
+      const sessionRecord = await getZipProcessingRecord(scanSessionId);
+      if (!sessionRecord?.extractedPath || !(await fs.pathExists(sessionRecord.extractedPath))) {
+        throw new Error("ZIP scan session is missing or expired. Re-upload and scan the ZIP file again.");
+      }
+
+      projectRoot = sessionRecord.extractedPath;
+    }
+
     const applied = await applyFixToCodebase({
       relativeFilePath: file,
       vulnerability,
       selectedFix: fix,
+      projectRoot,
     });
 
     return res.json(
@@ -440,5 +513,197 @@ export const handleApplyFixToCodebase = async (req, res) => {
     );
   } catch (error) {
     throw new ApiError(400, error.message || "Unable to apply fix to codebase");
+  }
+};
+
+export const handleDownloadFixedZipFromSession = async (req, res) => {
+  const scanSessionId = String(req.body?.scanSessionId || req.query?.scanSessionId || "").trim();
+
+  if (!scanSessionId) {
+    throw new ApiError(400, "scanSessionId is required");
+  }
+
+  const sessionRecord = await getZipProcessingRecord(scanSessionId);
+  if (!sessionRecord?.extractedPath || !(await fs.pathExists(sessionRecord.extractedPath))) {
+    throw new ApiError(400, "ZIP scan session is missing or expired. Re-upload and scan the ZIP file again.");
+  }
+
+  const outputZipPath = await compressDirectory(sessionRecord.extractedPath, `fixed-${scanSessionId}`);
+  const outputFileName = `fixed-${scanSessionId}.zip`;
+
+  return res.download(outputZipPath, outputFileName, async () => {
+    await cleanupTempPaths([outputZipPath]);
+  });
+};
+
+export const handleFixZipAndReturn = async (req, res) => {
+  const tempPaths = [];
+
+  if (!req.file || !isZipUpload(req.file)) {
+    throw new ApiError(400, "ZIP file is required");
+  }
+
+  tempPaths.push(req.file.path);
+
+  let extractedPath = "";
+  let outputZipPath = "";
+
+  try {
+    extractedPath = await extractZip(req.file.path);
+    tempPaths.push(extractedPath);
+
+    const record = await recordZipProcessingLocation({
+      uploadedZipPath: req.file.path,
+      extractedPath,
+    });
+
+    const allIssues = await collectIssuesForFolder(extractedPath);
+    const dedupedIssues = [];
+    const seen = new Set();
+
+    for (const issue of allIssues) {
+      const issueKey = `${String(issue.file || "").toLowerCase()}::${String(issue.title || "").toLowerCase()}`;
+      if (seen.has(issueKey)) {
+        continue;
+      }
+
+      seen.add(issueKey);
+      dedupedIssues.push(issue);
+    }
+
+    const appliedFixes = [];
+
+    for (const issue of dedupedIssues) {
+      if (!issue.file || !issue.title || !issue.fix) {
+        continue;
+      }
+
+      try {
+        const applied = await applyFixToCodebase({
+          relativeFilePath: issue.file,
+          vulnerability: issue.title,
+          selectedFix: issue.fix,
+          projectRoot: extractedPath,
+        });
+
+        appliedFixes.push({
+          file: applied.file,
+          vulnerability: issue.title,
+          strategy: applied.strategy,
+        });
+      } catch {
+        // Skip issues with no safe auto-fix heuristic.
+      }
+    }
+
+    outputZipPath = await compressDirectory(extractedPath, "fixed-project");
+    tempPaths.push(outputZipPath);
+
+    res.setHeader("X-Zip-Upload-Path", req.file.path);
+    res.setHeader("X-Zip-Extracted-Path", extractedPath);
+    res.setHeader("X-Zip-Record-Path", record.recordPath);
+    res.setHeader("X-Issues-Detected", String(allIssues.length));
+    res.setHeader("X-Fixes-Applied", String(appliedFixes.length));
+
+    const outputName = `fixed-${path.basename(req.file.originalname || "project.zip", ".zip")}.zip`;
+
+    return res.download(outputZipPath, outputName, async () => {
+      await cleanupTempPaths(tempPaths);
+    });
+  } catch (error) {
+    await cleanupTempPaths(tempPaths);
+    throw new ApiError(400, error.message || "Unable to process ZIP and apply fixes");
+  }
+};
+
+export const handleZipReportDownload = async (req, res) => {
+  const tempPaths = [];
+  const format = String(req.query?.format || req.body?.format || "json")
+    .trim()
+    .toLowerCase();
+
+  if (!["json", "pdf"].includes(format)) {
+    throw new ApiError(400, "format must be either json or pdf");
+  }
+
+  if (!req.file || !isZipUpload(req.file)) {
+    throw new ApiError(400, "ZIP file is required");
+  }
+
+  tempPaths.push(req.file.path);
+
+  try {
+    const extractedPath = await extractZip(req.file.path);
+    tempPaths.push(extractedPath);
+
+    const record = await recordZipProcessingLocation({
+      uploadedZipPath: req.file.path,
+      extractedPath,
+    });
+
+    const allIssues = await collectIssuesForFolder(extractedPath);
+    const vulnerabilityReport = buildVulnerabilityReport(allIssues);
+    const sortedIssues = sortIssuesBySeverity(allIssues);
+    const topFindings = sortedIssues.slice(0, 100);
+
+    const severityBreakdown = sortedIssues.reduce(
+      (acc, issue) => {
+        const severity = String(issue?.severity || "low").toLowerCase();
+
+        if (severity === "critical") {
+          acc.critical += 1;
+        } else if (severity === "high") {
+          acc.high += 1;
+        } else if (severity === "medium") {
+          acc.medium += 1;
+        } else {
+          acc.low += 1;
+        }
+
+        return acc;
+      },
+      { critical: 0, high: 0, medium: 0, low: 0 }
+    );
+
+    const reportPayload = {
+      generatedAt: new Date().toISOString(),
+      workflow: "zip-report-download",
+      input: {
+        uploadedFileName: req.file.originalname || path.basename(req.file.path),
+        uploadedZipPath: req.file.path,
+        extractedPath,
+        trackingRecordPath: record.recordPath,
+      },
+      summary: {
+        totalFindings: sortedIssues.length,
+        severityBreakdown,
+      },
+      vulnerabilityReport,
+      findings: topFindings,
+      note: "findings contains top 100 prioritized issues. vulnerabilityReport includes full category coverage for configured rules.",
+    };
+
+    const reportBaseName = path.basename(req.file.originalname || "zip-report", ".zip");
+    const reportPath =
+      format === "pdf"
+        ? await createZipScanReportPdf(reportPayload, reportBaseName)
+        : await createZipScanReportFile(reportPayload, reportBaseName);
+    tempPaths.push(reportPath);
+
+    const reportFileName = `${reportBaseName}-security-report.${format}`;
+
+    res.setHeader("X-Zip-Upload-Path", req.file.path);
+    res.setHeader("X-Zip-Extracted-Path", extractedPath);
+    res.setHeader("X-Zip-Record-Path", record.recordPath);
+    res.setHeader("X-Report-Path", reportPath);
+    res.setHeader("X-Report-Findings", String(sortedIssues.length));
+    res.setHeader("X-Report-Format", format);
+
+    return res.download(reportPath, reportFileName, async () => {
+      await cleanupTempPaths(tempPaths);
+    });
+  } catch (error) {
+    await cleanupTempPaths(tempPaths);
+    throw new ApiError(400, error.message || "Unable to generate ZIP scan report");
   }
 };

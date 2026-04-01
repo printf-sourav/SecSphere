@@ -278,7 +278,118 @@ const applyOpenNetworkFix = (content) => {
   };
 };
 
-const applyFixHeuristic = ({ content, vulnerability, extension }) => {
+const PY_PINNED_VERSIONS = {
+  flask: "2.3.3",
+  django: "4.2.16",
+  requests: "2.32.3",
+  fastapi: "0.115.0",
+  pyyaml: "6.0.2",
+  cryptography: "43.0.1",
+};
+
+const pinPythonDependencyLine = (line) => {
+  const trimmed = String(line || "").trim();
+
+  if (!trimmed || trimmed.startsWith("#") || trimmed.startsWith("-r ")) {
+    return line;
+  }
+
+  if (/(==|>=|<=|~=|!=|>|<)/.test(trimmed)) {
+    return line;
+  }
+
+  const match = trimmed.match(/^([a-zA-Z0-9_.-]+)/);
+  if (!match) {
+    return line;
+  }
+
+  const packageName = match[1];
+  const version = PY_PINNED_VERSIONS[packageName.toLowerCase()] || "1.0.0";
+  return `${packageName}==${version}`;
+};
+
+const applyInsecureDependenciesFix = (content, extension, targetPath) => {
+  const fileName = path.basename(String(targetPath || "")).toLowerCase();
+
+  if (fileName === "requirements.txt" || extension === ".txt") {
+    const lines = String(content || "").split(/\r?\n/);
+    let changed = false;
+
+    const updatedLines = lines.map((line) => {
+      const updatedLine = pinPythonDependencyLine(line);
+      if (updatedLine !== line) {
+        changed = true;
+      }
+
+      return updatedLine;
+    });
+
+    return {
+      changed,
+      updated: updatedLines.join("\n"),
+      strategy: changed ? "pin-python-dependencies" : null,
+    };
+  }
+
+  if (fileName === "package.json") {
+    try {
+      const parsed = JSON.parse(content);
+      let changed = false;
+
+      for (const section of ["dependencies", "devDependencies"]) {
+        const deps = parsed?.[section];
+        if (!deps || typeof deps !== "object") {
+          continue;
+        }
+
+        for (const [name, version] of Object.entries(deps)) {
+          const original = String(version || "");
+          const pinned = original.replace(/^[\^~]/, "");
+          if (pinned !== original) {
+            deps[name] = pinned;
+            changed = true;
+          }
+        }
+      }
+
+      return {
+        changed,
+        updated: changed ? `${JSON.stringify(parsed, null, 2)}\n` : content,
+        strategy: changed ? "pin-node-dependencies" : null,
+      };
+    } catch {
+      return {
+        changed: false,
+        updated: content,
+        strategy: null,
+      };
+    }
+  }
+
+  return {
+    changed: false,
+    updated: content,
+    strategy: null,
+  };
+};
+
+const applyInsecureNetworkUsageFix = (content) => {
+  const regex = /http:\/\//g;
+  let changed = false;
+
+  const updated = String(content || "").replace(regex, () => {
+    changed = true;
+    return "https://";
+  });
+
+  return {
+    changed,
+    updated,
+    strategy: changed ? "enforce-https" : null,
+  };
+};
+
+const applyFixHeuristic = ({ content, vulnerability, extension, targetPath }) => {
   const title = String(vulnerability || "").toLowerCase();
 
   if (/hardcoded\s+secret|possible\s+hardcoded\s+secret|access\s+key|private\s+key|token|password/.test(title)) {
@@ -297,6 +408,14 @@ const applyFixHeuristic = ({ content, vulnerability, extension }) => {
     return applyOpenNetworkFix(content);
   }
 
+  if (/insecure\s+dependenc/.test(title)) {
+    return applyInsecureDependenciesFix(content, extension, targetPath);
+  }
+
+  if (/insecure\s+network\s+usage/.test(title)) {
+    return applyInsecureNetworkUsageFix(content);
+  }
+
   return {
     changed: false,
     updated: content,
@@ -308,8 +427,9 @@ export const applyFixToCodebase = async ({
   relativeFilePath,
   vulnerability,
   selectedFix,
+  projectRoot,
 } = {}) => {
-  const rootDir = getProjectRoot();
+  const rootDir = projectRoot ? path.resolve(projectRoot) : getProjectRoot();
   const safeRelativeFilePath = normalizeRelativePath(relativeFilePath);
 
   if (!safeRelativeFilePath) {
@@ -345,6 +465,7 @@ export const applyFixToCodebase = async ({
     content: original,
     vulnerability,
     extension,
+    targetPath,
   });
 
   if (!patchResult.changed || patchResult.updated === original) {

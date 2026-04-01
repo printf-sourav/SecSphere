@@ -1,7 +1,12 @@
 import { useState, useRef } from 'react'
 import { Link } from 'react-router-dom'
 import Footer from '../components/Footer'
-import { applyFixToCodebase, runScan, submitFixFeedback } from '../services/api'
+import {
+  applyFixToCodebase,
+  downloadFixedZipFromSession,
+  runScan,
+  submitFixFeedback,
+} from '../services/api'
 
 // ── SEVERITY HELPERS ──────────────────────────────────────────────
 const SEV_META = {
@@ -136,6 +141,19 @@ const downloadAppliedFixFile = ({ vuln, selectedOption }) => {
   setTimeout(() => URL.revokeObjectURL(url), 0)
 
   return fileName
+}
+
+const downloadBlobFile = ({ blob, fileName }) => {
+  const url = URL.createObjectURL(blob)
+  const anchor = document.createElement('a')
+  anchor.href = url
+  anchor.download = fileName || 'fixed-project.zip'
+  document.body.appendChild(anchor)
+  anchor.click()
+  anchor.remove()
+  setTimeout(() => URL.revokeObjectURL(url), 0)
+
+  return fileName || 'fixed-project.zip'
 }
 
 const createFixChooserInitial = () => ({
@@ -296,6 +314,7 @@ const DashboardPage = () => {
         vulnerability: vuln.title,
         fix: selectedOption.fix,
         file: vuln.file,
+        scanSessionId: scanData?.scanSessionId,
       })
 
       await submitFixFeedback({
@@ -306,10 +325,20 @@ const DashboardPage = () => {
         notes: `Selected fix option: ${selectedOption.title}`,
       })
 
-      const downloadedFileName = downloadAppliedFixFile({
-        vuln,
-        selectedOption,
-      })
+      let downloadedFileName
+
+      if (scanData?.scanSessionId) {
+        const zipDownload = await downloadFixedZipFromSession({
+          scanSessionId: scanData.scanSessionId,
+        })
+
+        downloadedFileName = downloadBlobFile(zipDownload)
+      } else {
+        downloadedFileName = downloadAppliedFixFile({
+          vuln,
+          selectedOption,
+        })
+      }
 
       setFixApplied(prev => ({ ...prev, [vuln.id]: true }))
       setAppliedFixChoice(prev => ({
