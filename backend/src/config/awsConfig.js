@@ -1,5 +1,4 @@
 import "dotenv/config";
-import { BedrockRuntimeClient } from "@aws-sdk/client-bedrock-runtime";
 
 const extractRegionFromArn = (value) => {
   const arn = String(value || "").trim();
@@ -30,4 +29,4 @@ export const bedrockModelId =
 
 export const bedrockTimeoutMs = Number(process.env.BEDROCK_TIMEOUT_MS || 8000);
 
-export const bedrockClient = new BedrockRuntimeClient({ region: awsRegion });
+export const bedrockClient = null;

@@ -1,10 +1,3 @@
-import { InvokeModelCommand } from "@aws-sdk/client-bedrock-runtime";
-import {
-  bedrockClient,
-  bedrockModelId,
-  bedrockTimeoutMs,
-} from "../config/awsConfig.js";
-
 const EXPLANATION_FALLBACK_RULES = [
   {
     pattern: /cross-site\s+scripting|\bxss\b|innerhtml|dangerouslysetinnerhtml|document\.write/i,
@@ -243,48 +236,8 @@ const parseJsonObject = (text) => {
   }
 };
 
-const invokeBedrock = async (prompt, maxTokens = 250) => {
-  const body = JSON.stringify({
-    anthropic_version: "bedrock-2023-05-31",
-    max_tokens: maxTokens,
-    temperature: 0.2,
-    messages: [
-      {
-        role: "user",
-        content: [{ type: "text", text: prompt }],
-      },
-    ],
-  });
-
-  const command = new InvokeModelCommand({
-    modelId: bedrockModelId,
-    contentType: "application/json",
-    accept: "application/json",
-    body,
-  });
-
-  let timeoutId;
-  const timeoutPromise = new Promise((_, reject) => {
-    timeoutId = setTimeout(() => {
-      reject(new Error("Bedrock request timeout"));
-    }, bedrockTimeoutMs);
-  });
-
-  const response = await Promise.race([bedrockClient.send(command), timeoutPromise]);
-  clearTimeout(timeoutId);
-
-  const raw = new TextDecoder().decode(response.body);
-  const parsed = JSON.parse(raw);
-
-  if (Array.isArray(parsed?.content)) {
-    return parsed.content
-      .map((item) => item?.text || "")
-      .filter(Boolean)
-      .join("\n")
-      .trim();
-  }
-
-  return "";
+const invokeBedrock = async (_prompt, _maxTokens = 250) => {
+  throw new Error("Bedrock integration is disabled in this deployment.");
 };
 
 const getRuleBasedFallback = (title, learnedExamples = []) => {
