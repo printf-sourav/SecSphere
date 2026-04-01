@@ -416,7 +416,7 @@ const DetailedPage = () => {
                   </span>
                 </div>
                 <p className="text-[#6b6271] pl-6">Converts complex security issues into simple explanations.</p>
-                <div className="mt-2 pl-6 border-l-2 border-[#F40000]/30 ml-4 pl-3">
+                <div className="mt-2 border-l-2 border-[#F40000]/30 ml-4 pl-3">
                   <p className="text-[#6b6271] text-[10px] italic">"User input is directly used in SQL query →</p>
                   <p className="text-[#6b6271] text-[10px] italic"> attacker can inject malicious queries"</p>
                 </div>

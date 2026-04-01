@@ -9,6 +9,7 @@ const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 const backendRoot = path.resolve(__dirname, "..", "..");
 const extractedBaseDir = path.join(backendRoot, "src", "temp", "extracted");
+const reposBaseDir = path.join(backendRoot, "src", "temp", "repos");
 const jobsBaseDir = path.join(backendRoot, "src", "temp", "jobs");
 const outputBaseDir = path.join(backendRoot, "src", "temp", "output");
 const uploadsBaseDir = path.join(backendRoot, "src", "uploads");
@@ -171,16 +172,20 @@ export const getZipProcessingRecord = async (recordId) => {
     : null;
   const extractedPath = record?.extractedPath ? path.resolve(record.extractedPath) : null;
 
+  const safeExtractedPath =
+    extractedPath &&
+    (isInsideRoot(path.resolve(extractedBaseDir), extractedPath) ||
+      isInsideRoot(path.resolve(reposBaseDir), extractedPath))
+      ? extractedPath
+      : null;
+
   return {
     ...record,
     uploadedZipPath:
       uploadedZipPath && isInsideRoot(path.resolve(uploadsBaseDir), uploadedZipPath)
         ? uploadedZipPath
         : null,
-    extractedPath:
-      extractedPath && isInsideRoot(path.resolve(extractedBaseDir), extractedPath)
-        ? extractedPath
-        : null,
+    extractedPath: safeExtractedPath,
     recordPath,
   };
 };
@@ -190,7 +195,15 @@ export const compressDirectory = async (sourceDir, filePrefix = "fixed-project")
     throw new Error("sourceDir is required");
   }
 
-  const safeSourceDir = resolvePathInsideBase(extractedBaseDir, sourceDir, "sourceDir");
+  const resolvedSourceDir = path.resolve(sourceDir);
+  const safeSourceDir =
+    isInsideRoot(path.resolve(extractedBaseDir), resolvedSourceDir) ||
+    isInsideRoot(path.resolve(reposBaseDir), resolvedSourceDir)
+      ? resolvedSourceDir
+      : (() => {
+          throw new Error("sourceDir is outside allowed directory");
+        })();
+
   if (!(await fs.pathExists(safeSourceDir))) {
     throw new Error("sourceDir does not exist");
   }

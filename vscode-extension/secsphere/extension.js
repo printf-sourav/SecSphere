@@ -7,13 +7,34 @@ const axios = require("axios");
 const FormData = require("form-data");
 const yazl = require("yazl");
 
-const API_SCAN_URL = "http://localhost:5000/api/scan";
+const EXTENSION_CONFIG_SECTION = "aiSecurityReviewAgent";
+const DEFAULT_API_BASE_URL = "http://localhost:5000/api";
 const MAX_WORKSPACE_FILES = 100;
 const MAX_FILE_SIZE_BYTES = 1024 * 1024;
 const MAX_DISPLAY_RESULTS = 5;
 
 const ALLOWED_WORKSPACE_EXTENSIONS = new Set([".js", ".ts", ".json"]);
 const EXCLUDED_DIRECTORIES = new Set(["node_modules", ".git", "dist", "build"]);
+
+function normalizeApiBaseUrl(value) {
+    return String(value || "").trim().replace(/\/+$/, "");
+}
+
+function getConfiguredApiBaseUrl() {
+    const configuration = vscode.workspace.getConfiguration(EXTENSION_CONFIG_SECTION);
+    const configured = configuration.get("apiBaseUrl", DEFAULT_API_BASE_URL);
+    const normalized = normalizeApiBaseUrl(configured);
+    return normalized || DEFAULT_API_BASE_URL;
+}
+
+function getScanApiUrl() {
+    const baseUrl = getConfiguredApiBaseUrl();
+    if (/\/scan$/i.test(baseUrl)) {
+        return baseUrl;
+    }
+
+    return `${baseUrl}/scan`;
+}
 
 /**
  * @typedef {"High" | "Medium" | "Low"} Severity
@@ -673,7 +694,8 @@ function getOrCreateResultsPanel(state) {
  * @param {FormData} formData
  */
 async function sendToBackend(formData) {
-    const response = await axios.post(API_SCAN_URL, formData, {
+    const scanApiUrl = getScanApiUrl();
+    const response = await axios.post(scanApiUrl, formData, {
         headers: formData.getHeaders(),
         timeout: 120000,
         maxBodyLength: Infinity,
@@ -1090,8 +1112,15 @@ function createRuntimeState(context) {
  */
 function toErrorMessage(error) {
     if (axios.isAxiosError(error)) {
+        const axiosError = /** @type {any} */ (error);
+        if (!axiosError.response) {
+            const configuredUrl = getScanApiUrl();
+            return `Cannot reach scanner backend at ${configuredUrl}. Update setting \"aiSecurityReviewAgent.apiBaseUrl\" (Railway example: https://your-app.up.railway.app/api).`;
+        }
+
+        const responseData = /** @type {any} */ (axiosError.response?.data);
         const backendMessage =
-            error.response?.data?.message || error.response?.data?.error || error.message;
+            responseData?.message || responseData?.error || axiosError.message;
         return backendMessage || "Unable to complete scan request.";
     }
 

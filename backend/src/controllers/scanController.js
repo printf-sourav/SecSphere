@@ -513,7 +513,7 @@ export const handleApplyFixToCodebase = async (req, res) => {
     if (scanSessionId) {
       const sessionRecord = await getZipProcessingRecord(scanSessionId);
       if (!sessionRecord?.extractedPath || !(await fs.pathExists(sessionRecord.extractedPath))) {
-        throw new Error("ZIP scan session is missing or expired. Re-upload and scan the ZIP file again.");
+        throw new Error("Scan session is missing or expired. Re-scan the repository/ZIP and try again.");
       }
 
       projectRoot = sessionRecord.extractedPath;
@@ -547,7 +547,7 @@ export const handleDownloadFixedZipFromSession = async (req, res) => {
 
   const sessionRecord = await getZipProcessingRecord(scanSessionId);
   if (!sessionRecord?.extractedPath || !(await fs.pathExists(sessionRecord.extractedPath))) {
-    throw new ApiError(400, "ZIP scan session is missing or expired. Re-upload and scan the ZIP file again.");
+    throw new ApiError(400, "Scan session is missing or expired. Re-scan the repository/ZIP and try again.");
   }
 
   const outputZipPath = await compressDirectory(sessionRecord.extractedPath, `fixed-${scanSessionId}`);

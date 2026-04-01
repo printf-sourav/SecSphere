@@ -23,7 +23,17 @@
         "title": "Scan Workspace",
         "category": "AI Security Review Agent"
       }
-    ]
+    ],
+    "configuration": {
+      "title": "AI Security Review Agent",
+      "properties": {
+        "aiSecurityReviewAgent.apiBaseUrl": {
+          "type": "string",
+          "default": "http://localhost:5000/api",
+          "description": "Base URL of the SecSphere backend API. For Railway use: https://<your-service>.up.railway.app/api"
+        }
+      }
+    }
   },
   "scripts": {
     "lint": "eslint .",
