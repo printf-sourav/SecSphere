@@ -67,6 +67,12 @@ const EXPLANATION_FALLBACK_RULES = [
     fix: "Move secrets to a secret manager or environment variables, rotate compromised values, and block secret commits in CI.",
   },
   {
+    pattern: /path\s+traversal|directory\s+traversal|zip\s+slip/i,
+    explanation:
+      "Unvalidated file paths can let an attacker escape intended directories and read or overwrite sensitive files.",
+    fix: "Normalize untrusted paths with path.resolve, reject absolute paths and '..' segments, and verify the resolved path stays within a fixed allowlisted base directory.",
+  },
+  {
     pattern: /path\.?join/i,
     explanation:
       "User-influenced path construction can lead to path traversal and unauthorized file system access.",

@@ -14,6 +14,8 @@ const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 
 const PORT = Number(process.env.PORT || 5000);
+const JSON_BODY_LIMIT = process.env.JSON_BODY_LIMIT || "1mb";
+const isProduction = String(process.env.NODE_ENV || "").toLowerCase() === "production";
 const FRONTEND_DIST_PATH = path.resolve(__dirname, "../Frontend/dist");
 const frontendOrigins = String(process.env.FRONTEND_ORIGIN || "http://localhost:5173")
   .split(",")
@@ -35,6 +37,8 @@ const isLocalDevOrigin = (origin) => {
     return false;
   }
 };
+
+app.disable("x-powered-by");
 
 app.use(
   cors({
@@ -61,7 +65,7 @@ app.use(
     },
   })
 );
-app.use(express.json());
+app.use(express.json({ limit: JSON_BODY_LIMIT }));
 
 app.get("/api/health", (req, res) => {
   res.json({
@@ -100,10 +104,15 @@ if (fs.existsSync(FRONTEND_DIST_PATH)) {
 
 // Global error handler
 app.use((err, req, res, next) => {
-  res.status(err.statusCode || 500).json({
+  const statusCode = err.statusCode || 500;
+  const message = statusCode >= 500 && isProduction
+    ? "Internal Server Error"
+    : err.message || "Internal Server Error";
+
+  res.status(statusCode).json({
     success: false,
     data: null,
-    message: err.message || "Internal Server Error",
+    message,
     errors: err.errors || [],
   });
 });
