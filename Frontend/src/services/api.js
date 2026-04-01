@@ -30,6 +30,7 @@ const normalizeScanData = (data = {}) => {
     riskBand: String(data?.riskBand || 'low').toLowerCase(),
     bestPractices: Array.isArray(data?.bestPractices) ? data.bestPractices : [],
     projectContext: data?.projectContext || {},
+    scanSessionId: data?.scanSessionId || null,
   };
 };
 
@@ -93,7 +94,7 @@ export async function submitFixFeedback({ vulnerability, fix, projectType, file,
 /**
  * Apply selected fix directly to the project codebase via backend.
  */
-export async function applyFixToCodebase({ vulnerability, fix, file, relativeFilePath } = {}) {
+export async function applyFixToCodebase({ vulnerability, fix, file, relativeFilePath, scanSessionId } = {}) {
   const res = await fetch(`${API_BASE}/fix/apply`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
@@ -102,6 +103,7 @@ export async function applyFixToCodebase({ vulnerability, fix, file, relativeFil
       fix,
       file: file || relativeFilePath,
       relativeFilePath: relativeFilePath || file,
+      scanSessionId,
     }),
   });
 
@@ -112,4 +114,35 @@ export async function applyFixToCodebase({ vulnerability, fix, file, relativeFil
   }
 
   return json.data;
+}
+
+export async function downloadFixedZipFromSession({ scanSessionId } = {}) {
+  const res = await fetch(`${API_BASE}/fix/session/download`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ scanSessionId }),
+  });
+
+  if (!res.ok) {
+    let message = `Download failed (${res.status})`;
+
+    try {
+      const json = await res.json();
+      message = json?.message || message;
+    } catch {
+      // Ignore non-JSON error payload.
+    }
+
+    throw new Error(message);
+  }
+
+  const blob = await res.blob();
+  const disposition = res.headers.get('content-disposition') || '';
+  const match = disposition.match(/filename\*=UTF-8''([^;]+)|filename="?([^";]+)"?/i);
+  const fileName = decodeURIComponent(match?.[1] || match?.[2] || 'fixed-project.zip');
+
+  return {
+    blob,
+    fileName,
+  };
 }

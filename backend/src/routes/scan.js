@@ -2,7 +2,10 @@ import express from "express";
 import { upload } from "../utils/multer.js";
 import {
 	handleApplyFixToCodebase,
+	handleDownloadFixedZipFromSession,
 	handleFixFeedback,
+	handleFixZipAndReturn,
+	handleZipReportDownload,
 	handleScan,
 } from "../controllers/scanController.js";
 import { asyncHandler } from "../utils/asyncHandler.js";
@@ -105,5 +108,8 @@ router.post("/scan", upload.single("file"), asyncHandler(handleScan));
 router.post("/feedback/fix", asyncHandler(handleFixFeedback));
 
 router.post("/fix/apply", asyncHandler(handleApplyFixToCodebase));
+router.post("/fix/session/download", asyncHandler(handleDownloadFixedZipFromSession));
+router.post("/fix/zip", upload.single("file"), asyncHandler(handleFixZipAndReturn));
+router.post("/fix/zip/report", upload.single("file"), asyncHandler(handleZipReportDownload));
 
 export default router;
