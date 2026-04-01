@@ -1,0 +1,34 @@
+[
+  {
+    "id": "pattern_sql_injection_prepared_statement",
+    "vulnerability": "SQL Injection due to string concatenation in query",
+    "fix": "Use parameterized queries or prepared statements and validate user input before query execution.",
+    "projectType": "generic",
+    "usageCount": 12,
+    "source": "pattern-dataset"
+  },
+  {
+    "id": "pattern_hardcoded_secret_env",
+    "vulnerability": "Hardcoded API key or secret in source code",
+    "fix": "Move the secret to environment variables or a secret manager and rotate compromised keys.",
+    "projectType": "generic",
+    "usageCount": 10,
+    "source": "pattern-dataset"
+  },
+  {
+    "id": "pattern_iam_wildcard_least_privilege",
+    "vulnerability": "IAM policy with wildcard Action or Resource",
+    "fix": "Replace wildcard permissions with least-privilege actions/resources scoped to required services only.",
+    "projectType": "generic",
+    "usageCount": 9,
+    "source": "pattern-dataset"
+  },
+  {
+    "id": "pattern_open_network_access_restrict",
+    "vulnerability": "Security group allows 0.0.0.0/0 for sensitive ports",
+    "fix": "Restrict inbound CIDR ranges, expose only required ports, and enforce private access paths.",
+    "projectType": "generic",
+    "usageCount": 8,
+    "source": "pattern-dataset"
+  }
+]
