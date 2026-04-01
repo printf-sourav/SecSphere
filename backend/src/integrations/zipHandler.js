@@ -31,6 +31,8 @@ export const extractZip = async (zipFilePath) => {
 export const recordZipProcessingLocation = async ({
   uploadedZipPath,
   extractedPath,
+  sourceType,
+  sourceRef,
 } = {}) => {
   await fs.ensureDir(jobsBaseDir);
 
@@ -40,6 +42,8 @@ export const recordZipProcessingLocation = async ({
     createdAt: new Date(now).toISOString(),
     uploadedZipPath: uploadedZipPath || null,
     extractedPath: extractedPath || null,
+    sourceType: sourceType || null,
+    sourceRef: sourceRef || null,
   };
 
   const recordPath = path.join(jobsBaseDir, `${record.id}.json`);
