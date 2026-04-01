@@ -39,64 +39,22 @@ const normalizeFixText = (value = '') =>
     .replace(/\s+/g, ' ')
     .toLowerCase()
 
-const getTemplateFixOptions = (vuln = {}) => {
-  const title = String(vuln.title || '').toLowerCase()
-  const options = []
+const getAiProblemText = (vuln = {}) => String(vuln.explanation || vuln.title || '').trim()
 
-  if (/hardcoded\s+secret|access\s+key|private\s+key|api[_\s-]?key|token|password/.test(title)) {
-    options.push(
-      {
-        title: 'Use Environment Variables',
-        source: 'secure-template',
-        fix: 'Move secrets out of source code into environment variables, load at runtime, and never commit the values to version control.',
-      },
-      {
-        title: 'Use Managed Secret Store',
-        source: 'secure-template',
-        fix: 'Store secrets in AWS Secrets Manager or a vault service, grant least-privilege runtime access, and fetch secrets dynamically.',
-      },
-      {
-        title: 'Rotate and Clean Exposure',
-        source: 'secure-template',
-        fix: 'Rotate the exposed secret immediately, remove it from git history, and add secret-scanning checks to CI to prevent reintroduction.',
-      }
-    )
+const getAiSolutionText = (vuln = {}) => {
+  if (String(vuln.fix || '').trim()) {
+    return String(vuln.fix).trim()
   }
 
-  if (/wildcard\s+cors\s+origin|cors/.test(title)) {
-    options.push(
-      {
-        title: 'Allowlist Trusted Origins',
-        source: 'secure-template',
-        fix: 'Replace wildcard CORS origin with an explicit allowlist of trusted frontend domains and disable credentials for unknown origins.',
-      },
-      {
-        title: 'Environment-Specific CORS Policy',
-        source: 'secure-template',
-        fix: 'Use strict CORS in production and configurable origin lists per environment to avoid permissive defaults leaking to prod.',
-      }
-    )
-  }
+  const learned = (vuln.learningHints || []).find((hint) => String(hint?.fix || '').trim())
+  return learned ? String(learned.fix).trim() : ''
+}
 
-  if (/iam\s+wildcard\s+action|iam\s+wildcard\s+resource|administratoraccess/.test(title)) {
-    options.push(
-      {
-        title: 'Apply Least-Privilege IAM',
-        source: 'secure-template',
-        fix: 'Replace wildcard actions/resources with exact actions and ARNs required by the workload, and add conditional constraints where possible.',
-      }
-    )
-  }
-
-  if (!options.length) {
-    options.push({
-      title: 'General Secure Remediation',
-      source: 'secure-template',
-      fix: 'Apply least-privilege access, validate untrusted inputs, and harden default configuration before deployment.',
-    })
-  }
-
-  return options
+const toSingleLinePreview = (value = '', maxLength = 88) => {
+  const text = String(value || '').replace(/\s+/g, ' ').trim()
+  if (!text) return ''
+  if (text.length <= maxLength) return text
+  return `${text.slice(0, Math.max(0, maxLength - 1)).trim()}...`
 }
 
 const buildFixOptions = (vuln = {}) => {
@@ -118,8 +76,6 @@ const buildFixOptions = (vuln = {}) => {
       fix: hint.fix,
     })
   }
-
-  rawOptions.push(...getTemplateFixOptions(vuln))
 
   const seen = new Set()
   const deduped = []
@@ -947,6 +903,16 @@ const DashboardPage = () => {
                             <div className="flex-1 min-w-0">
                               <p className="text-white text-[11px] font-medium truncate">{v.title}</p>
                               <p className="text-[#6b6271] text-[9px] font-mono mt-0.5">{v.file}{v.line ? `:${v.line}` : ''}</p>
+                              {getAiProblemText(v) && (
+                                <p className="text-[#F4998D] text-[9px] mt-1 truncate">
+                                  Problem: {toSingleLinePreview(getAiProblemText(v), 92)}
+                                </p>
+                              )}
+                              {getAiSolutionText(v) && (
+                                <p className="text-[#00ff41] text-[9px] mt-0.5 truncate">
+                                  Solution: {toSingleLinePreview(getAiSolutionText(v), 92)}
+                                </p>
+                              )}
                               {v.learningHints?.length > 0 && (
                                 <span className="text-[8px] text-[#00ff41] font-bold mt-0.5 inline-block">✦ LEARNED FIX</span>
                               )}
@@ -994,15 +960,27 @@ const DashboardPage = () => {
 
                           <div className="h-px bg-[#F40000]/10" />
 
-                          {current.explanation ? (
+                          {getAiProblemText(current) ? (
                             <div>
-                              <p className="text-[9px] text-[#F40000] font-bold tracking-wider mb-2">🧠 AI EXPLANATION:</p>
-                              <p className="text-[#c8c0d0] leading-relaxed text-[11px]">{current.explanation}</p>
+                              <p className="text-[9px] text-[#F40000] font-bold tracking-wider mb-2">🧠 AI GENERATED PROBLEM:</p>
+                              <p className="text-[#c8c0d0] leading-relaxed text-[11px]">{getAiProblemText(current)}</p>
                             </div>
                           ) : (
                             <div>
-                              <p className="text-[9px] text-[#6b6271] font-bold tracking-wider mb-2">🧠 AI EXPLANATION:</p>
-                              <p className="text-[#6b6271] text-[10px] italic">AI explanation not available for this issue.</p>
+                              <p className="text-[9px] text-[#6b6271] font-bold tracking-wider mb-2">🧠 AI GENERATED PROBLEM:</p>
+                              <p className="text-[#6b6271] text-[10px] italic">AI-generated problem details are not available for this issue.</p>
+                            </div>
+                          )}
+
+                          {getAiSolutionText(current) ? (
+                            <div>
+                              <p className="text-[9px] text-[#00ff41] font-bold tracking-wider mb-2">🛠 AI GENERATED SOLUTION:</p>
+                              <p className="text-[#00ff41] leading-relaxed text-[11px]">{getAiSolutionText(current)}</p>
+                            </div>
+                          ) : (
+                            <div>
+                              <p className="text-[9px] text-[#6b6271] font-bold tracking-wider mb-2">🛠 AI GENERATED SOLUTION:</p>
+                              <p className="text-[#6b6271] text-[10px] italic">AI-generated solution is not available for this issue.</p>
                             </div>
                           )}
 
@@ -1070,26 +1048,24 @@ const DashboardPage = () => {
                           ) : currentFixOptions.length > 0 ? (
                             <>
                               <div>
-                                <p className="text-[9px] text-[#00ff41] font-bold tracking-wider mb-2">🛠 PRIMARY SUGGESTED FIX:</p>
-                                <div className="p-3 rounded bg-[#00ff41]/3 border border-[#00ff41]/15 font-mono text-[10px] space-y-1">
-                                  {currentFixOptions[0].fix.split('\n').map((line, j) => (
-                                    <p key={j} className="text-[#00ff41]">+ {line}</p>
-                                  ))}
-                                </div>
-                                <p className="text-[#6b6271] text-[9px] mt-2">
-                                  {currentFixOptions.length} fix options available. Choose the best one before applying.
+                                <p className="text-[9px] text-[#F4998D] font-bold tracking-wider mb-2">PROBLEM (AI):</p>
+                                <p className="text-[#c8c0d0] leading-relaxed text-[11px]">
+                                  {getAiProblemText(current) || 'AI-generated problem details are not available for this issue.'}
                                 </p>
                               </div>
 
                               <div className="h-px bg-[#F40000]/10" />
 
                               <div>
-                                <p className="text-[9px] text-[#6b6271] font-bold tracking-wider mb-1.5">IMPACT PREVIEW:</p>
-                                <div className="space-y-1 text-[10px]">
-                                  <p className="text-[#00ff41]">✓ Vulnerability will be resolved</p>
-                                  <p className="text-[#00ff41]">✓ No breaking changes detected</p>
-                                  <p className="text-[#6b6271]">✓ Compatible with existing codebase</p>
+                                <p className="text-[9px] text-[#00ff41] font-bold tracking-wider mb-2">SOLUTION (AI):</p>
+                                <div className="p-3 rounded bg-[#00ff41]/3 border border-[#00ff41]/15 font-mono text-[10px] space-y-1">
+                                  {(String(currentFixOptions[0].fix || '').trim() || 'AI-generated fix is not available.').split('\n').map((line, j) => (
+                                    <p key={j} className="text-[#00ff41]">+ {line}</p>
+                                  ))}
                                 </div>
+                                <p className="text-[#6b6271] text-[9px] mt-2">
+                                  {currentFixOptions.length} AI/learned fix options available.
+                                </p>
                               </div>
 
                               <div className="flex gap-2 pt-1">
