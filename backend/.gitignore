@@ -1,0 +1,18 @@
+# Dependencies
+node_modules/
+
+# Environment files
+.env
+
+# Runtime scan artifacts
+src/uploads/
+src/temp/
+
+# Logs
+logs/
+*.log
+
+# Editor and OS
+.vscode/
+.DS_Store
+Thumbs.db
