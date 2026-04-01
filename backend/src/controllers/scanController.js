@@ -209,6 +209,8 @@ export const handleScan = async (req, res) => {
       const zipRecord = await recordZipProcessingLocation({
         uploadedZipPath: req.file.path,
         extractedPath: folderPath,
+        sourceType: "zip",
+        sourceRef: req.file.originalname || req.file.path,
       });
       zipScanSessionId = zipRecord.id;
     }
@@ -228,7 +230,12 @@ export const handleScan = async (req, res) => {
         throw new ApiError(400, "Invalid repository URL");
       }
 
-      tempPaths.push(folderPath);
+      const repoRecord = await recordZipProcessingLocation({
+        extractedPath: folderPath,
+        sourceType: "repo",
+        sourceRef: repoUrl,
+      });
+      zipScanSessionId = repoRecord.id;
     }
 
     if (!folderPath && req.file) {
@@ -370,6 +377,7 @@ export const handleScan = async (req, res) => {
         const ai = await explainIssue(issue.title, {
           projectContext,
           learnedExamples,
+          issue,
         });
 
         const result = {

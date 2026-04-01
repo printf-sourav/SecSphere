@@ -389,6 +389,63 @@ const applyInsecureNetworkUsageFix = (content) => {
   };
 };
 
+const applyPathTraversalFix = (content, extension) => {
+  let changed = false;
+  let updated = String(content || "");
+
+  if (extension === ".py") {
+    const replacedDotDot = updated.replace(/\.\.\//g, () => {
+      changed = true;
+      return "";
+    });
+
+    updated = replacedDotDot.replace(
+      /(open\s*\(\s*["'][^"']*[\\/]?["']\s*\+\s*)([a-zA-Z_][a-zA-Z0-9_]*)/g,
+      (full, prefix, variableName) => {
+        changed = true;
+        return `${prefix}os.path.basename(${variableName})`;
+      }
+    );
+
+    return {
+      changed,
+      updated,
+      strategy: changed ? "sanitize-path-input" : null,
+    };
+  }
+
+  const replacedDotDot = updated.replace(/\.\.\//g, () => {
+    changed = true;
+    return "";
+  });
+
+  updated = replacedDotDot.replace(
+    /((?:open|fs\.(?:readFile|readFileSync|createReadStream|writeFile|writeFileSync|createWriteStream))\s*\(\s*["'][^"']*[\\/]?["']\s*\+\s*)([a-zA-Z_$][a-zA-Z0-9_$]*)/g,
+    (full, prefix, variableName) => {
+      changed = true;
+      return `${prefix}path.basename(${variableName})`;
+    }
+  );
+
+  return {
+    changed,
+    updated,
+    strategy: changed ? "sanitize-path-input" : null,
+  };
+};
+
+const applyInsecureFileHandlingFix = (content, extension) => {
+  const traversalResult = applyPathTraversalFix(content, extension);
+  if (traversalResult.changed) {
+    return {
+      ...traversalResult,
+      strategy: "secure-file-path-handling",
+    };
+  }
+
+  return traversalResult;
+};
+
 const applyFixHeuristic = ({ content, vulnerability, extension, targetPath }) => {
   const title = String(vulnerability || "").toLowerCase();
 
@@ -414,6 +471,14 @@ const applyFixHeuristic = ({ content, vulnerability, extension, targetPath }) =>
 
   if (/insecure\s+network\s+usage/.test(title)) {
     return applyInsecureNetworkUsageFix(content);
+  }
+
+  if (/path\s+traversal/.test(title)) {
+    return applyPathTraversalFix(content, extension);
+  }
+
+  if (/insecure\s+file\s+handling/.test(title)) {
+    return applyInsecureFileHandlingFix(content, extension);
   }
 
   return {

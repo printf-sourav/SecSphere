@@ -7,6 +7,90 @@ import {
 
 const EXPLANATION_FALLBACK_RULES = [
   {
+    pattern: /cross-site\s+scripting|\bxss\b|innerhtml|dangerouslysetinnerhtml|document\.write/i,
+    explanation:
+      "Unsanitized user-controlled content can be rendered in the browser and execute attacker scripts.",
+    fix: "Never write raw user input to HTML sinks. Use safe text rendering APIs, sanitize rich content, and enforce CSP headers.",
+  },
+  {
+    pattern: /insecure\s+network\s+usage|http:\/\//i,
+    explanation:
+      "Unencrypted HTTP traffic can expose credentials and sensitive data to interception or tampering.",
+    fix: "Use HTTPS endpoints only, enforce TLS in configuration, and reject insecure transport for authentication or sensitive operations.",
+  },
+  {
+    pattern: /insecure\s+dependenc|dependency/i,
+    explanation:
+      "Unpinned or outdated dependencies can pull vulnerable versions and increase supply-chain risk.",
+    fix: "Pin exact dependency versions, upgrade vulnerable packages to patched releases, and enforce dependency scanning in CI/CD.",
+  },
+  {
+    pattern: /path\s+traversal|\.\.\//i,
+    explanation:
+      "Path traversal allows attackers to access files outside intended directories by manipulating path input.",
+    fix: "Normalize and sanitize file paths, use basename/allowlisted paths, and restrict all file operations to a fixed trusted directory.",
+  },
+  {
+    pattern: /insecure\s+file\s+handling|file\s+upload|file\s+type\s+spoofing/i,
+    explanation:
+      "Unsafe file handling can allow malicious uploads or unintended file reads/writes.",
+    fix: "Validate file type and extension, sanitize filenames, store uploads outside executable paths, and block traversal patterns.",
+  },
+  {
+    pattern: /missing\s+input\s+validation|req\.(body|query|params)|request\.(json|body|query|params)/i,
+    explanation:
+      "Using unvalidated input increases risk of injection, logic abuse, and runtime errors.",
+    fix: "Apply strict schema validation (type, length, format), reject invalid input early, and encode data for its output context.",
+  },
+  {
+    pattern: /improper\s+error\s+handling|return\s+str\(e\)|res\.json\(\s*\{\s*error/i,
+    explanation:
+      "Returning raw error details can leak internal implementation information to attackers.",
+    fix: "Return sanitized user-facing error messages and log detailed stack traces only on the server side.",
+  },
+  {
+    pattern: /sensitive\s+logging|console\.log\(|print\(/i,
+    explanation:
+      "Logging sensitive values can expose secrets through logs, monitoring systems, or support channels.",
+    fix: "Mask or remove secrets from logs and enforce centralized log redaction for tokens, passwords, and keys.",
+  },
+  {
+    pattern: /weak\s+cryptography|\bmd5\b|\bsha1\b/i,
+    explanation:
+      "Weak hashing algorithms are vulnerable to collision and brute-force attacks.",
+    fix: "Use modern primitives such as bcrypt/argon2 for passwords and SHA-256+ or authenticated encryption for integrity/confidentiality.",
+  },
+  {
+    pattern: /deserialization\s+vulnerabilit|pickle\.loads|yaml\.load/i,
+    explanation:
+      "Unsafe deserialization of untrusted data can lead to remote code execution.",
+    fix: "Avoid unsafe deserializers for untrusted input, use safe parsing APIs, and strictly validate allowed data structures.",
+  },
+  {
+    pattern: /missing\s+rate\s+limiting/i,
+    explanation:
+      "Missing rate limits can enable brute-force attacks, scraping, and service abuse.",
+    fix: "Add route-level rate limiting and abuse controls with per-IP/per-account thresholds and backoff/lockout policies.",
+  },
+  {
+    pattern: /broken\s+access\s+control|\/admin/i,
+    explanation:
+      "Insufficient authorization checks can expose privileged actions to unauthorized users.",
+    fix: "Enforce authentication and role/permission checks on every protected route and deny by default.",
+  },
+  {
+    pattern: /insecure\s+authentication\s+logic|password\s*==/i,
+    explanation:
+      "Weak authentication logic can allow account compromise through predictable or insecure checks.",
+    fix: "Use secure password hashing, strong credential policies, and centralized authentication middleware with lockout/MFA support.",
+  },
+  {
+    pattern: /hardcoded\s+debug|debug\s*=\s*true/i,
+    explanation:
+      "Debug mode in non-development environments can expose internals and sensitive runtime state.",
+    fix: "Disable debug mode in production and gate verbose diagnostics behind secure internal-only controls.",
+  },
+  {
     pattern: /wildcard\s+cors\s+origin|cors[_\s-]?origin\s*[:=]\s*["']\*["']/i,
     explanation:
       "A wildcard CORS origin allows any website to call your API, which can expose authenticated endpoints to untrusted origins.",
@@ -84,6 +168,19 @@ const toContextLine = (projectContext = {}) => {
   const domain = projectContext?.domain || "generic";
   const confidence = Number(projectContext?.confidence || 0);
   return `Project context: domain=${domain}, confidence=${confidence}`;
+};
+
+const toIssueContextLine = (issue = {}) => {
+  if (!issue || typeof issue !== "object") {
+    return "";
+  }
+
+  const file = issue?.file || "unknown";
+  const line = issue?.line || "n/a";
+  const severity = String(issue?.severity || "low").toLowerCase();
+  const category = issue?.category || "unknown";
+
+  return `Issue context: severity=${severity}, category=${category}, file=${file}, line=${line}`;
 };
 
 const toLearnedExamplesText = (learnedExamples = []) => {
@@ -220,15 +317,19 @@ export const explainIssue = async (title, options = {}) => {
   const learnedExamples = Array.isArray(options?.learnedExamples)
     ? options.learnedExamples
     : [];
+  const issue = options?.issue || {};
 
   const learnedExamplesText = toLearnedExamplesText(learnedExamples);
+  const issueContextLine = toIssueContextLine(issue);
 
   const prompt = [
     "You are a cloud security expert.",
     "Given a vulnerability title, return only valid JSON with keys: explanation, fix.",
     "Keep explanation to 1-2 sentences and fix to actionable secure code guidance.",
+    "Do not use generic templates. Mention the specific vulnerability and mitigation for the affected context.",
     "Tailor impact based on project context when available.",
     toContextLine(projectContext),
+    issueContextLine,
     learnedExamplesText ? "Reference learned fix examples below when relevant:" : "",
     learnedExamplesText,
     `Title: ${safeTitle}`,
