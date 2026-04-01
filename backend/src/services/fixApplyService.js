@@ -24,7 +24,24 @@ const normalizeRelativePath = (value) =>
   toPosixPath(value)
     .trim()
     .replace(/^\/+/, "")
-    .replace(/^\.\//, "");
+    .replace(/^(\.\/)+/, "");
+
+const isSafeRelativePath = (relativePath) => {
+  if (!relativePath || relativePath.includes("\u0000")) {
+    return false;
+  }
+
+  if (relativePath.startsWith("/") || /^[a-zA-Z]:\//.test(relativePath)) {
+    return false;
+  }
+
+  const segments = relativePath.split("/").filter(Boolean);
+  if (!segments.length) {
+    return false;
+  }
+
+  return segments.every((segment) => segment !== "." && segment !== "..");
+};
 
 const isInsideRoot = (rootDir, targetPath) => {
   const relative = path.relative(rootDir, targetPath);
@@ -45,7 +62,7 @@ const getProjectRoot = () => {
 const resolveTargetFilePath = async (relativeFilePath, rootDir) => {
   const safeRelativePath = normalizeRelativePath(relativeFilePath);
 
-  if (!safeRelativePath) {
+  if (!isSafeRelativePath(safeRelativePath)) {
     return null;
   }
 
@@ -57,6 +74,12 @@ const resolveTargetFilePath = async (relativeFilePath, rootDir) => {
   const files = await walkFiles(rootDir, { maxFiles: 4000 });
   const wanted = safeRelativePath.toLowerCase();
   const wantedParts = wanted.split("/").filter(Boolean);
+
+  // Fuzzy fallback is only allowed for a bare filename to avoid ambiguous nested-path targeting.
+  if (wantedParts.length > 1) {
+    return null;
+  }
+
   const wantedBaseName = wantedParts[wantedParts.length - 1] || "";
 
   let bestMatch = null;
@@ -497,8 +520,8 @@ export const applyFixToCodebase = async ({
   const rootDir = projectRoot ? path.resolve(projectRoot) : getProjectRoot();
   const safeRelativeFilePath = normalizeRelativePath(relativeFilePath);
 
-  if (!safeRelativeFilePath) {
-    throw new Error("file is required");
+  if (!isSafeRelativePath(safeRelativeFilePath)) {
+    throw new Error("Invalid file path");
   }
 
   if (!String(vulnerability || "").trim()) {
