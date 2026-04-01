@@ -144,18 +144,106 @@ const applyCorsWildcardFix = (content) => {
   };
 };
 
+const DEFAULT_IAM_LEAST_PRIVILEGE_ACTIONS = ["s3:GetObject", "s3:PutObject"];
+const DEFAULT_IAM_LEAST_PRIVILEGE_RESOURCES = ["arn:aws:s3:::example-bucket/*"];
+
+const ensureStringArray = (value) => {
+  if (Array.isArray(value)) {
+    return value.map((item) => String(item || "").trim());
+  }
+
+  return [String(value || "").trim()];
+};
+
+const hasWildcardOrEmptyEntry = (value) =>
+  ensureStringArray(value).some((item) => item === "*" || item === "");
+
+const detectJsonIndent = (content) => {
+  const match = content.match(/\n(\s+)"/);
+
+  if (!match || !match[1]) {
+    return 2;
+  }
+
+  return match[1].length;
+};
+
+const applyIamWildcardFixFromJson = (content) => {
+  let parsed;
+
+  try {
+    parsed = JSON.parse(content);
+  } catch {
+    return null;
+  }
+
+  const statement = parsed?.Statement;
+  const statements = Array.isArray(statement)
+    ? statement
+    : (statement && typeof statement === "object" ? [statement] : []);
+
+  if (!statements.length) {
+    return {
+      changed: false,
+      updated: content,
+      strategy: null,
+    };
+  }
+
+  let changed = false;
+
+  for (const item of statements) {
+    if (!item || typeof item !== "object") {
+      continue;
+    }
+
+    if (Object.prototype.hasOwnProperty.call(item, "Action") && hasWildcardOrEmptyEntry(item.Action)) {
+      item.Action = [...DEFAULT_IAM_LEAST_PRIVILEGE_ACTIONS];
+      changed = true;
+    }
+
+    if (Object.prototype.hasOwnProperty.call(item, "Resource") && hasWildcardOrEmptyEntry(item.Resource)) {
+      item.Resource = [...DEFAULT_IAM_LEAST_PRIVILEGE_RESOURCES];
+      changed = true;
+    }
+  }
+
+  if (!changed) {
+    return {
+      changed: false,
+      updated: content,
+      strategy: null,
+    };
+  }
+
+  const indentation = detectJsonIndent(content);
+  const updated = `${JSON.stringify(parsed, null, indentation)}${content.endsWith("\n") ? "\n" : ""}`;
+
+  return {
+    changed,
+    updated,
+    strategy: "iam-least-privilege-template",
+  };
+};
+
 const applyIamWildcardFix = (content) => {
+  const jsonResult = applyIamWildcardFixFromJson(content);
+
+  if (jsonResult && jsonResult.changed) {
+    return jsonResult;
+  }
+
   let changed = false;
   let updated = content;
 
-  const actionRegex = /"Action"\s*:\s*"\*"/g;
-  const resourceRegex = /"Resource"\s*:\s*"\*"/g;
+  const actionRegex = /"Action"\s*:\s*(?:"\*"|\[[^\]]*"\*"[^\]]*\])/g;
+  const resourceRegex = /"Resource"\s*:\s*(?:"\*"|\[[^\]]*"\*"[^\]]*\])/g;
 
   if (actionRegex.test(updated)) {
     changed = true;
     updated = updated.replace(
       actionRegex,
-      '"Action": ["s3:GetObject", "s3:PutObject"]'
+      `"Action": ["${DEFAULT_IAM_LEAST_PRIVILEGE_ACTIONS[0]}", "${DEFAULT_IAM_LEAST_PRIVILEGE_ACTIONS[1]}"]`
     );
   }
 
@@ -163,7 +251,7 @@ const applyIamWildcardFix = (content) => {
     changed = true;
     updated = updated.replace(
       resourceRegex,
-      '"Resource": ["arn:aws:s3:::example-bucket/*"]'
+      `"Resource": ["${DEFAULT_IAM_LEAST_PRIVILEGE_RESOURCES[0]}"]`
     );
   }
 
